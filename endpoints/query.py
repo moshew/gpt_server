@@ -266,20 +266,59 @@ async def create_save_response_task(chat_id: int, full_response: str):
 async def start_query_session(
     chat_id: int,
     query: str = Form(...),
-    _: User = Depends(verify_chat_owner())
+    images: List[UploadFile] = File(None),
+    _: User = Depends(verify_chat_owner()),
+    db: AsyncSession = Depends(get_db)
 ):
     """
-    Start a new query session by uploading a long query.
+    Start a new query session by uploading a long query and optional images.
+    
+    Args:
+        chat_id: Chat identifier
+        query: User's question
+        images: Optional list of image files to include with the query
+        db: Database session
+        
+    Returns:
+        Session ID to use with query_chat
     """
+    
     session_id = str(uuid.uuid4())
-    pending_queries[session_id] = {
+    session_data = {
         "chat_id": chat_id,
         "query": query,
-        "created_at": time.time()
+        "created_at": time.time(),
+        "images": []
     }
+    
+    # Process and store images in session
+    if images:
+        for img in images:
+            if img is not None:
+                try:
+                    # Read image content
+                    image_data = await img.read()
+                    
+                    # Convert to base64
+                    import base64
+                    base64_image = base64.b64encode(image_data).decode('utf-8')
+                    
+                    # Store image metadata in session for later use in query_chat
+                    session_data["images"].append({
+                        "filename": img.filename or f"image_{uuid.uuid4()}.jpg",
+                        "content_type": img.content_type,
+                        "base64": base64_image
+                    })
+                    
+                    # Reset file pointer
+                    await img.seek(0)
+                except Exception as e:
+                    logger.error(f"Error processing image in session: {e}")
+    
+    pending_queries[session_id] = session_data
     return {"session_id": session_id}
 
-@app.post("/query/")
+@app.get("/query/")
 async def query_chat(
     chat_id: int,
     token: str,
@@ -287,19 +326,22 @@ async def query_chat(
     query: Optional[str] = None,
     session_id: Optional[str] = None,
     kb_name: Optional[str] = None,
-    images: List[UploadFile] = File(None),
     db: AsyncSession = Depends(get_db)
 ):
     """
     Process general user queries and stream responses
     
+    This endpoint requires either a direct query or a session_id from start_query_session.
+    For queries with images, first call start_query_session and then use the returned
+    session_id with this endpoint.
+    
     Args:
         chat_id: Chat identifier
-        query: User's question
         token: Authentication token
         web_search: Whether to perform web search for up-to-date information
+        query: User's question (required if session_id is not provided)
+        session_id: Optional session ID from start_query_session (required for image queries)
         kb_name: Name of knowledge base to query (if None, use document context)
-        images: Optional list of image files to include with the query
         db: Database session
         
     Returns:
@@ -318,6 +360,10 @@ async def query_chat(
             background=BackgroundTasks()
         )
 
+    # Verify user authorization for GET request
+    user = await get_user_from_token(token, db)
+    await verify_chat_ownership(chat_id, user.id, db)
+
                 
     # Process a user query, either directly or by session_id.
     if session_id:
@@ -327,47 +373,25 @@ async def query_chat(
         if session["chat_id"] != chat_id:
             raise HTTPException(status_code=400, detail="chat_id mismatch with session_id")
         query = session["query"]
+        # Get images from session if they exist
+        image_contents = session.get("images", [])
     else:
         if not query:
             raise HTTPException(status_code=400, detail="Missing query")
+        image_contents = []
 
-    # Verify user authorization first
-    user = await get_user_from_token(token, db)
-    await verify_chat_ownership(chat_id, user.id, db)
     
     # Create a cancellation event for this query
     cancel_event = register_active_query(chat_id)
     
-    # Process and save image files as separate user messages before saving the query
-    if images:
-        for img in images:
-            if img is not None:
-                try:
-                    # Read image content
-                    image_data = await img.read()
-                    
-                    # Convert to base64
-                    import base64
-                    base64_image = base64.b64encode(image_data).decode('utf-8')
-                    
-                    # Generate a unique filename if none exists
-                    img_filename = img.filename or f"image_{uuid.uuid4()}.jpg"
-                    
-                    # Create context with image metadata
-                    img_message_context = json.dumps({
-                        "type": "image",
-                        "filename": img_filename,
-                        "content_type": img.content_type
-                    })
-                    
-                    # Save image as a separate user message - base64 content goes directly in the content field
-                    # and metadata goes in the context field
-                    await save_message(db, chat_id, "user", base64_image, context=img_message_context)
-                    
-                    # Reset file pointer for future reads
-                    await img.seek(0)
-                except Exception as e:
-                    logger.error(f"Error saving image message: {e}")
+    # Save images to DB if they were included in the session
+    if image_contents:
+        for img in image_contents:
+            try:
+                # Save image as a separate user message
+                await save_message(db, chat_id, "user", img["base64"])
+            except Exception as e:
+                logger.error(f"Error saving image message from session: {e}")
     
     # Now save the text query as a user message
     await save_message(db, chat_id, "user", query)
@@ -438,24 +462,8 @@ async def query_chat(
             # Create message chain to send to the LLM
             conversation = [SystemMessage(content=system_prompt)] + memory.chat_memory.messages
             
-            # Process image files if provided
-            image_contents = []
-            if images:
-                for img in images:
-                    if img is not None:
-                        # Read image content
-                        image_data = await img.read()
-                        # Convert to base64
-                        import base64
-                        base64_image = base64.b64encode(image_data).decode('utf-8')
-                        # Store image metadata and content
-                        image_contents.append({
-                            "filename": img.filename,
-                            "content": base64_image,
-                            "content_type": img.content_type
-                        })
-                        # Reset file pointer for potential future reads
-                        await img.seek(0)
+            # Process image files if provided in the session
+            # (No need to read files as they're already processed and stored in the session)
             
             # Add document context to the query if available
             enhanced_query = query
@@ -465,7 +473,7 @@ async def query_chat(
             # Create the message content with text and images if available
             message_content = enhanced_query
             
-            # If we have images, create a multimodal message content
+            # If we have images from the session, create a multimodal message content
             if image_contents:
                 message_content = [
                     {"type": "text", "text": enhanced_query}
@@ -475,7 +483,7 @@ async def query_chat(
                     message_content.append({
                         "type": "image_url",
                         "image_url": {
-                            "url": f"data:{img['content_type']};base64,{img['content']}"
+                            "url": f"data:{img['content_type']};base64,{img['base64']}"
                         }
                     })
             
