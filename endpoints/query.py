@@ -216,7 +216,7 @@ async def setup_query(
         db: Database session
         
     Returns:
-        A tuple of (cancel_event, memory, system_prompt)
+        A tuple of (cancel_event, memory, system_prompt, user_msg_task)
     """
     user = await get_user_from_token(token, db)
     await verify_chat_ownership(chat_id, user.id, db)
@@ -246,24 +246,39 @@ async def setup_query(
     system_prompt = app.state.system_prompt
     
     # Return everything without waiting for the save to complete
-    return (cancel_event, memory, system_prompt)
+    # Include the save_task so we can await it before saving assistant response
+    return (cancel_event, memory, system_prompt, save_task)
 
-async def create_save_response_task(chat_id: int, full_response: str):
+async def create_save_response_task(chat_id: int, full_response: str, user_msg_task: asyncio.Task = None):
     """
     Create a task to save the assistant's response to the database
     
     Args:
         chat_id: Chat identifier
         full_response: The complete response to save
+        user_msg_task: Task that saves the user message (to ensure proper message order)
     """
     # Define an async function to save the response
     async def save_assistant_message():
-        # Create a new DB session specifically for this background task
-        task_db = await get_new_db_session()
         try:
-            await save_message(task_db, chat_id, "assistant", full_response)
-        finally:
-            await safe_close_session(task_db)
+            # Wait for user message to be saved first (if provided)
+            if user_msg_task is not None:
+                try:
+                    # Wait for user message to be saved with a timeout
+                    await asyncio.wait_for(user_msg_task, timeout=10.0)
+                except asyncio.TimeoutError:
+                    logger.warning(f"Timeout waiting for user message save in chat {chat_id}")
+                except Exception as e:
+                    logger.error(f"Error waiting for user message save in chat {chat_id}: {e}")
+            
+            # Create a new DB session specifically for this background task
+            task_db = await get_new_db_session()
+            try:
+                await save_message(task_db, chat_id, "assistant", full_response)
+            finally:
+                await safe_close_session(task_db)
+        except Exception as e:
+            logger.error(f"Error in background save for assistant message: {e}")
     
     # Create task and register with task_manager
     task = asyncio.create_task(save_assistant_message())
@@ -557,7 +572,7 @@ async def query_chat(
             
             # Skip saving if the query was cancelled or empty response
             if full_response:
-                await create_save_response_task(chat_id, full_response)
+                await create_save_response_task(chat_id, full_response, save_task)
             
         except Exception as e:
             # Handle errors and send them to the user
@@ -596,7 +611,7 @@ async def query_code(
         Streaming response in SSE (Server-Sent Events) format
     """
     # Setup common resources
-    cancel_event, memory, system_prompt = await setup_query(chat_id, query, token, db)
+    cancel_event, memory, system_prompt, user_msg_task = await setup_query(chat_id, query, token, db)
     
     # Get code context from the external module
     code_context = get_code_context(chat_id)
@@ -643,7 +658,7 @@ async def query_code(
             
             # Skip saving if the query was cancelled or empty response
             if full_response:
-                await create_save_response_task(chat_id, full_response)
+                await create_save_response_task(chat_id, full_response, user_msg_task)
             
         except Exception as e:
             # Handle errors and send them to the user
