@@ -396,7 +396,8 @@ async def query_chat(
                 
     # Process a user query, either directly or by session_id.
     if session_id:
-        session = pending_queries.pop(session_id, None)
+        # Retrieve session without removing it yet - will be removed when first data chunk arrives
+        session = pending_queries.get(session_id)
         if not session:
             raise HTTPException(status_code=400, detail="Invalid or expired session_id")
         if session["chat_id"] != chat_id:
@@ -532,6 +533,7 @@ async def query_chat(
             
             # Use llm_helpers to process langchain messages
             async def message_generator():
+                first_chunk = True
                 async for content in await process_langchain_messages(
                     messages=conversation,
                     model_config="default",  # Use default model config as base
@@ -541,6 +543,11 @@ async def query_chat(
                     if should_cancel_query(chat_id):
                         logger.info(f"Query for chat {chat_id} was cancelled")
                         break
+                    
+                    # If this is the first chunk, remove session data from pending_queries
+                    if first_chunk and session_id and session_id in pending_queries:
+                        del pending_queries[session_id]
+                        first_chunk = False
                     
                     nonlocal full_response
                     full_response += content
