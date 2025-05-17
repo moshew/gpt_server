@@ -569,7 +569,6 @@ async def query_chat(
                     
                     nonlocal full_response
                     full_response += content
-                    print(content)
                     yield content
             
             # Use the SSE utility to stream the response
