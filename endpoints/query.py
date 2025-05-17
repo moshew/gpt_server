@@ -257,42 +257,38 @@ async def create_save_response_task(chat_id: int, full_response: str, task_db: A
         task_db: Database session already created for this chat (to reuse)
         user_msg_task: Task that saves the user message (to ensure proper message order)
     """
-    # Define an async function to save the response
-    async def save_assistant_message():
-        try:
-            # First, make sure user message save task has completed
-            if user_msg_task is not None:
-                try:
-                    # Wait for user message to be saved with a timeout
-                    await asyncio.wait_for(user_msg_task, timeout=10.0)
-                except asyncio.TimeoutError:
-                    logger.warning(f"Timeout waiting for user message save in chat {chat_id}")
-                except Exception as e:
-                    logger.error(f"Error waiting for user message save in chat {chat_id}: {e}")
-            
-            # Use the provided DB session or create a new one if none
-            session_to_use = task_db
-            should_close = False
-            
-            if session_to_use is None or not hasattr(session_to_use, 'is_active') or not session_to_use.is_active:
-                session_to_use = await get_new_db_session()
-                should_close = True
-                
+    # Instead of creating a background task that might get lost,
+    # perform the save directly and make sure it completes
+    try:
+        # First, make sure user message save task has completed
+        if user_msg_task is not None:
             try:
-                await save_message(session_to_use, chat_id, "assistant", full_response)
-            finally:
-                # Only close the session if we created it here
-                if should_close:
-                    await safe_close_session(session_to_use)
-                else:
-                    # If using an existing session, we close it here since this is the end of its use
-                    await safe_close_session(session_to_use)
-        except Exception as e:
-            logger.error(f"Error in background save for assistant message: {e}")
-    
-    # Create task and register with task_manager
-    task = asyncio.create_task(save_assistant_message())
-    app.state.task_manager.add_task(chat_id, task)
+                # Wait for user message to be saved with a timeout
+                await asyncio.wait_for(user_msg_task, timeout=10.0)
+            except asyncio.TimeoutError:
+                logger.warning(f"Timeout waiting for user message save in chat {chat_id}")
+            except Exception as e:
+                logger.error(f"Error waiting for user message save in chat {chat_id}: {e}")
+        
+        # Use the provided DB session or create a new one if none
+        session_to_use = task_db
+        should_close = False
+        
+        if session_to_use is None or not hasattr(session_to_use, 'is_active') or not session_to_use.is_active:
+            session_to_use = await get_new_db_session()
+            should_close = True
+            
+        try:
+            # Actually save the message and wait for it to complete
+            await save_message(session_to_use, chat_id, "assistant", full_response)
+            logger.info(f"Assistant message saved successfully for chat {chat_id}")
+        finally:
+            # Only close the session if we created it here or if we're done with it
+            if should_close or (session_to_use is not None and hasattr(session_to_use, 'is_active')):
+                await safe_close_session(session_to_use)
+                logger.debug(f"Session closed after assistant message save for chat {chat_id}")
+    except Exception as e:
+        logger.error(f"Error saving assistant message for chat {chat_id}: {e}")
 
 @app.post("/start_query_session/{chat_id}")
 async def start_query_session(
@@ -723,8 +719,18 @@ async def query_image(
         # Register this query for potential cancellation
         cancel_event = register_active_query(chat_id)
         
-        # Save the user's message using the injected db session
-        await save_message(db, chat_id, "user", prompt)
+        # Create a new independent DB session for saving messages
+        task_db = await get_new_db_session()
+        
+        # Save the user's message using a background task
+        async def save_message_task():
+            try:
+                await save_message(task_db, chat_id, "user", prompt)
+            except Exception as e:
+                logger.error(f"Error in background save for user message: {e}")
+                # Don't close the session here, it will be used for the assistant message
+                
+        save_task = asyncio.create_task(save_message_task())
         
         # Extract base URL from the request
         base_url = str(request.base_url).rstrip('/')
@@ -781,27 +787,13 @@ async def query_image(
         # Unregister the query since it's complete
         unregister_active_query(chat_id)
         
-        # Define a function to save the assistant message
-        async def save_assistant_message():
-            try:
-                # Create a new DB session for the background task
-                task_db = await get_new_db_session()
-                try:
-                    # Save the message
-                    if "error" not in result:
-                        message_context = json.dumps({"type": "image", "filename": result['filename'], "url": result['url'], "created": result['created']})
-                    else:
-                         message_context = result["error"]
-                    await save_message(task_db, chat_id, "assistant",  message_context)
-                finally:
-                    # Always close the session
-                    await safe_close_session(task_db)
-            except Exception as e:
-                logger.error(f"Error in background save for image response: {e}")
-        
-        # Create task and register with task_manager
-        task = asyncio.create_task(save_assistant_message())
-        app.state.task_manager.add_task(chat_id, task)
+        # Save the assistant message using the task_db created earlier
+        if result:
+            # Use create_save_response_task to ensure proper order
+            message_content = json.dumps({"type": "image", "filename": result.get('filename', ''), "url": result.get('url', ''), "created": result.get('created', '')}) if "error" not in result else result["error"]
+            
+            # Use the same function as other endpoints with the existing task_db
+            await create_save_response_task(chat_id, message_content, task_db, save_task)
 
         # Return response
         return result
