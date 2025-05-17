@@ -44,6 +44,7 @@ async def get_db():
         await db.rollback()
         raise
     finally:
+        print("closing db")
         # Safe close that checks session state first
         if db.is_active:
             try:
