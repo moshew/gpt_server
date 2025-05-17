@@ -224,8 +224,20 @@ async def setup_query(
     # Create a cancellation event for this query
     cancel_event = register_active_query(chat_id)
     
-    # Save the user message
-    await save_message(db, chat_id, "user", query)
+    # Start saving the user message in background without waiting for it
+    # Create a new independent DB session for this background task to avoid blocking the main session
+    async def save_message_task():
+        try:
+            # Create a new DB session specifically for this background task
+            task_db = await get_new_db_session()
+            try:
+                await save_message(task_db, chat_id, "user", query)
+            finally:
+                await safe_close_session(task_db)
+        except Exception as e:
+            logger.error(f"Error in background save for user message: {e}")
+            
+    save_task = asyncio.create_task(save_message_task())
     
     # Load conversation history
     memory = await load_memory(db, chat_id)
@@ -233,6 +245,7 @@ async def setup_query(
     # Get system instructions
     system_prompt = app.state.system_prompt
     
+    # Return everything without waiting for the save to complete
     return (cancel_event, memory, system_prompt)
 
 async def create_save_response_task(chat_id: int, full_response: str):

@@ -65,19 +65,19 @@ async def get_new_db_session():
     return SessionLocal()
 
 # Helper function to safely close a session
-async def safe_close_session(db):
-    """
-    Safely close a database session, handling any errors
-    
-    Args:
-        db: Database session to close
-    """
+async def safe_close_session(db, timeout=5):
+    """Close session with timeout guarantee"""
     if db is not None:
         try:
             if db.is_active:
-                await db.close()
+                # הוספת timeout לסגירת החיבור
+                close_task = asyncio.create_task(db.close())
+                try:
+                    await asyncio.wait_for(close_task, timeout=timeout)
+                except asyncio.TimeoutError:
+                    logger.warning(f"Session close timeout after {timeout}s")
         except Exception as e:
-            logger.error(f"Error safely closing session: {e}")
+            logger.error(f"Error closing session: {e}")
 
 async def load_memory(db: AsyncSession, chat_id: int):
     """
