@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from database import User, Chat, Message
 from langchain.schema import HumanMessage, SystemMessage
+from contextlib import asynccontextmanager
 
 from app_init import app
 from auth import get_user_from_token, verify_chat_owner, verify_chat_ownership
