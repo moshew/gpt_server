@@ -394,10 +394,29 @@ async def query_chat(
     if image_contents:
         for img in image_contents:
             try:
-                # Format as HTML img tag for better display
-                img_html = f'<img src="data:{img["content_type"]};base64,{img["base64"]}" alt="User uploaded image" />'
+                # Get image format from content type
+                img_format = "png"  # Default format
+                if img["content_type"]:
+                    if "jpeg" in img["content_type"] or "jpg" in img["content_type"]:
+                        img_format = "jpg"
+                    elif "png" in img["content_type"]:
+                        img_format = "png"
+                    elif "gif" in img["content_type"]:
+                        img_format = "gif"
+                    elif "webp" in img["content_type"]:
+                        img_format = "webp"
+                    elif "svg" in img["content_type"]:
+                        img_format = "svg"
+                
+                # Create JSON structure for image
+                img_json = json.dumps({
+                    "type": "image",
+                    "data": img["base64"],
+                    "format": img_format
+                })
+                
                 # Save image as a separate user message
-                await save_message(db, chat_id, "user", img_html)
+                await save_message(db, chat_id, "user", img_json)
             except Exception as e:
                 logger.error(f"Error saving image message from session: {e}")
     
