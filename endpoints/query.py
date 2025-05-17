@@ -43,13 +43,6 @@ pending_queries = {}
 # Define path for knowledge bases
 KNOWLEDGE_BASE_DIR = os.environ.get("KNOWLEDGE_BASE_DIR", "knowledgebase")
 
-# Configure model to support multimodal inputs
-MULTIMODAL_MODEL_CONFIG = {
-    "model": "gpt-4o",  # OpenAI's multimodal model that supports image inputs
-    "temperature": 0.2,
-    "max_tokens": 8000,
-}
-
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -304,9 +297,21 @@ async def start_query_session(
                     import base64
                     base64_image = base64.b64encode(image_data).decode('utf-8')
                     
+                    # Get proper extension from content type
+                    extension = ".jpg"  # Default extension
+                    if img.content_type:
+                        if img.content_type == "image/png":
+                            extension = ".png"
+                        elif img.content_type == "image/gif":
+                            extension = ".gif"
+                        elif img.content_type == "image/webp":
+                            extension = ".webp"
+                        elif img.content_type == "image/svg+xml":
+                            extension = ".svg"
+                    
                     # Store image metadata in session for later use in query_chat
                     session_data["images"].append({
-                        "filename": img.filename or f"image_{uuid.uuid4()}.jpg",
+                        "filename": img.filename or f"image_{uuid.uuid4()}{extension}",
                         "content_type": img.content_type,
                         "base64": base64_image
                     })
@@ -389,8 +394,10 @@ async def query_chat(
     if image_contents:
         for img in image_contents:
             try:
+                # Format as HTML img tag for better display
+                img_html = f'<img src="data:{img["content_type"]};base64,{img["base64"]}" alt="User uploaded image" />'
                 # Save image as a separate user message
-                await save_message(db, chat_id, "user", img["base64"])
+                await save_message(db, chat_id, "user", img_html)
             except Exception as e:
                 logger.error(f"Error saving image message from session: {e}")
     
@@ -496,7 +503,6 @@ async def query_chat(
                 async for content in await process_langchain_messages(
                     messages=conversation,
                     model_config="default",  # Use default model config as base
-                    custom_config=MULTIMODAL_MODEL_CONFIG if image_contents else None,  # Apply multimodal config if images exist
                     stream=True
                 ):
                     # Check if the query has been cancelled
@@ -506,6 +512,7 @@ async def query_chat(
                     
                     nonlocal full_response
                     full_response += content
+                    print(content)
                     yield content
             
             # Use the SSE utility to stream the response
