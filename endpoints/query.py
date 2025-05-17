@@ -216,7 +216,7 @@ async def setup_query(
         db: Database session
         
     Returns:
-        A tuple of (cancel_event, memory, system_prompt, user_msg_task)
+        A tuple of (cancel_event, memory, system_prompt, task_db)
     """
     user = await get_user_from_token(token, db)
     await verify_chat_ownership(chat_id, user.id, db)
@@ -224,18 +224,16 @@ async def setup_query(
     # Create a cancellation event for this query
     cancel_event = register_active_query(chat_id)
     
+    # Create a new independent DB session for saving messages
+    task_db = await get_new_db_session()
+    
     # Start saving the user message in background without waiting for it
-    # Create a new independent DB session for this background task to avoid blocking the main session
     async def save_message_task():
         try:
-            # Create a new DB session specifically for this background task
-            task_db = await get_new_db_session()
-            try:
-                await save_message(task_db, chat_id, "user", query)
-            finally:
-                await safe_close_session(task_db)
+            await save_message(task_db, chat_id, "user", query)
         except Exception as e:
             logger.error(f"Error in background save for user message: {e}")
+            # Don't close the session here, it will be used for the assistant message
             
     save_task = asyncio.create_task(save_message_task())
     
@@ -246,22 +244,23 @@ async def setup_query(
     system_prompt = app.state.system_prompt
     
     # Return everything without waiting for the save to complete
-    # Include the save_task so we can await it before saving assistant response
-    return (cancel_event, memory, system_prompt, save_task)
+    # Include the task_db so we can use it for saving assistant response
+    return (cancel_event, memory, system_prompt, task_db, save_task)
 
-async def create_save_response_task(chat_id: int, full_response: str, user_msg_task: asyncio.Task = None):
+async def create_save_response_task(chat_id: int, full_response: str, task_db: AsyncSession = None, user_msg_task: asyncio.Task = None):
     """
     Create a task to save the assistant's response to the database
     
     Args:
         chat_id: Chat identifier
         full_response: The complete response to save
+        task_db: Database session already created for this chat (to reuse)
         user_msg_task: Task that saves the user message (to ensure proper message order)
     """
     # Define an async function to save the response
     async def save_assistant_message():
         try:
-            # Wait for user message to be saved first (if provided)
+            # First, make sure user message save task has completed
             if user_msg_task is not None:
                 try:
                     # Wait for user message to be saved with a timeout
@@ -271,12 +270,23 @@ async def create_save_response_task(chat_id: int, full_response: str, user_msg_t
                 except Exception as e:
                     logger.error(f"Error waiting for user message save in chat {chat_id}: {e}")
             
-            # Create a new DB session specifically for this background task
-            task_db = await get_new_db_session()
+            # Use the provided DB session or create a new one if none
+            session_to_use = task_db
+            should_close = False
+            
+            if session_to_use is None or not hasattr(session_to_use, 'is_active') or not session_to_use.is_active:
+                session_to_use = await get_new_db_session()
+                should_close = True
+                
             try:
-                await save_message(task_db, chat_id, "assistant", full_response)
+                await save_message(session_to_use, chat_id, "assistant", full_response)
             finally:
-                await safe_close_session(task_db)
+                # Only close the session if we created it here
+                if should_close:
+                    await safe_close_session(session_to_use)
+                else:
+                    # If using an existing session, we close it here since this is the end of its use
+                    await safe_close_session(session_to_use)
         except Exception as e:
             logger.error(f"Error in background save for assistant message: {e}")
     
@@ -572,7 +582,7 @@ async def query_chat(
             
             # Skip saving if the query was cancelled or empty response
             if full_response:
-                await create_save_response_task(chat_id, full_response, save_task)
+                await create_save_response_task(chat_id, full_response, task_db, save_task)
             
         except Exception as e:
             # Handle errors and send them to the user
@@ -611,7 +621,7 @@ async def query_code(
         Streaming response in SSE (Server-Sent Events) format
     """
     # Setup common resources
-    cancel_event, memory, system_prompt, user_msg_task = await setup_query(chat_id, query, token, db)
+    cancel_event, memory, system_prompt, task_db, user_msg_task = await setup_query(chat_id, query, token, db)
     
     # Get code context from the external module
     code_context = get_code_context(chat_id)
@@ -658,7 +668,7 @@ async def query_code(
             
             # Skip saving if the query was cancelled or empty response
             if full_response:
-                await create_save_response_task(chat_id, full_response, user_msg_task)
+                await create_save_response_task(chat_id, full_response, task_db, user_msg_task)
             
         except Exception as e:
             # Handle errors and send them to the user
