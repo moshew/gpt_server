@@ -245,9 +245,9 @@ async def setup_query(
     
     # Return everything without waiting for the save to complete
     # Include the task_db so we can use it for saving assistant response
-    return (cancel_event, memory, system_prompt, task_db, save_task)
+    return (cancel_event, memory, system_prompt, task_db)
 
-async def create_save_response_task(chat_id: int, full_response: str, task_db: AsyncSession = None, user_msg_task: asyncio.Task = None):
+async def create_save_response_task(chat_id: int, full_response: str, task_db: AsyncSession = None):
     """
     Create a task to save the assistant's response to the database
     
@@ -255,21 +255,10 @@ async def create_save_response_task(chat_id: int, full_response: str, task_db: A
         chat_id: Chat identifier
         full_response: The complete response to save
         task_db: Database session already created for this chat (to reuse)
-        user_msg_task: Task that saves the user message (to ensure proper message order)
     """
     # Instead of creating a background task that might get lost,
     # perform the save directly and make sure it completes
     try:
-        # First, make sure user message save task has completed
-        if user_msg_task is not None:
-            try:
-                # Wait for user message to be saved with a timeout
-                await asyncio.wait_for(user_msg_task, timeout=10.0)
-            except asyncio.TimeoutError:
-                logger.warning(f"Timeout waiting for user message save in chat {chat_id}")
-            except Exception as e:
-                logger.error(f"Error waiting for user message save in chat {chat_id}: {e}")
-        
         # Use the provided DB session or create a new one if none
         session_to_use = task_db
         should_close = False
@@ -420,9 +409,8 @@ async def query_chat(
             raise HTTPException(status_code=400, detail="Missing query")
         image_contents = []
 
-    
-    # Create a cancellation event for this query
-    cancel_event = register_active_query(chat_id)
+    # Create dedicated DB session and setup resources
+    cancel_event, memory, system_prompt, task_db = await setup_query(chat_id, query, token, db)
     
     # Save images to DB if they were included in the session
     if image_contents:
@@ -449,19 +437,10 @@ async def query_chat(
                     "format": img_format
                 })
                 
-                # Save image as a separate user message
-                await save_message(db, chat_id, "user", img_json)
+                # Save image as a separate user message using the dedicated task_db
+                await save_message(task_db, chat_id, "user", img_json)
             except Exception as e:
                 logger.error(f"Error saving image message from session: {e}")
-    
-    # Now save the text query as a user message
-    await save_message(db, chat_id, "user", query)
-    
-    # Load conversation history (now includes image messages)
-    memory = await load_memory(db, chat_id)
-    
-    # Get system instructions
-    system_prompt = app.state.system_prompt
     
     # Prepare document context if available
     document_context = ""
@@ -577,7 +556,7 @@ async def query_chat(
             
             # Skip saving if the query was cancelled or empty response
             if full_response:
-                await create_save_response_task(chat_id, full_response, task_db, save_task)
+                await create_save_response_task(chat_id, full_response, task_db)
             
         except Exception as e:
             # Handle errors and send them to the user
@@ -616,7 +595,7 @@ async def query_code(
         Streaming response in SSE (Server-Sent Events) format
     """
     # Setup common resources
-    cancel_event, memory, system_prompt, task_db, user_msg_task = await setup_query(chat_id, query, token, db)
+    cancel_event, memory, system_prompt, task_db = await setup_query(chat_id, query, token, db)
     
     # Get code context from the external module
     code_context = get_code_context(chat_id)
@@ -663,7 +642,7 @@ async def query_code(
             
             # Skip saving if the query was cancelled or empty response
             if full_response:
-                await create_save_response_task(chat_id, full_response, task_db, user_msg_task)
+                await create_save_response_task(chat_id, full_response, task_db)
             
         except Exception as e:
             # Handle errors and send them to the user
@@ -793,7 +772,7 @@ async def query_image(
             message_content = json.dumps({"type": "image", "filename": result.get('filename', ''), "url": result.get('url', ''), "created": result.get('created', '')}) if "error" not in result else result["error"]
             
             # Use the same function as other endpoints with the existing task_db
-            await create_save_response_task(chat_id, message_content, task_db, save_task)
+            await create_save_response_task(chat_id, message_content, task_db)
 
         # Return response
         return result
