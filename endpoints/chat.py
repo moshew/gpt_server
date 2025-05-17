@@ -16,11 +16,11 @@ from pydantic import BaseModel
 from fastapi import Depends, HTTPException, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from database import Chat, Message, File
+from database import SessionLocal, Chat, Message, User, File
 
 from app_init import app
-from auth import get_current_user
-from db_manager import get_db, get_new_db_session, safe_close_session
+from auth import get_current_user, get_user_from_token
+from db_manager import get_db, get_new_db_session, safe_close_session, get_chat_db
 from utils import run_in_executor, call_llm
 
 # Class for chat creation request
@@ -57,11 +57,11 @@ async def generate_chat_title(message: str) -> str:
         print(f"Error generating chat title: {e}")
         return ""
 
-# Get user chats endpoint
+# Get all chats for current user 
 @app.get("/chats/")
 async def get_user_chats(
     user = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_chat_db)  # Use dedicated chat session
 ):
     """
     Get the 10 most recent chats for a user
@@ -102,7 +102,7 @@ async def get_user_chats(
 async def get_chat_data(
     chat_id: int,
     user = Depends(get_current_user), 
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_chat_db)  # Use dedicated chat session
 ):
     """
     Get all messages and files for a specific chat, separating document and code files,
