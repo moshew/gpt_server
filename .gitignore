@@ -1,0 +1,20 @@
+# Ignore all hidden files and directories
+.*
+!.gitignore
+
+# Ignore specific directories
+chat/
+chats/
+code/
+code_rag_storage/
+gpt_code/
+images/
+knowledgebase/
+nltk_data/
+old/
+rag_storage/
+static/
+__pycache__/
+
+# Ignore file extensions
+*.pem 
