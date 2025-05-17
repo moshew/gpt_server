@@ -9,6 +9,7 @@ This module:
 5. Enhances queries with document context when available
 6. Supports image generation and variation requests
 7. Enhanced with Confluence knowledge base integration
+8. Supports adding images to queries for multimodal LLM processing
 """
 import uuid
 import asyncio
@@ -40,6 +41,13 @@ pending_queries = {}
 
 # Define path for knowledge bases
 KNOWLEDGE_BASE_DIR = os.environ.get("KNOWLEDGE_BASE_DIR", "knowledgebase")
+
+# Configure model to support multimodal inputs
+MULTIMODAL_MODEL_CONFIG = {
+    "model": "gpt-4o",  # OpenAI's multimodal model that supports image inputs
+    "temperature": 0.2,
+    "max_tokens": 8000,
+}
 
 # Configure logging
 logging.basicConfig(
@@ -271,7 +279,7 @@ async def start_query_session(
     }
     return {"session_id": session_id}
 
-@app.get("/query/")
+@app.post("/query/")
 async def query_chat(
     chat_id: int,
     token: str,
@@ -279,6 +287,7 @@ async def query_chat(
     query: Optional[str] = None,
     session_id: Optional[str] = None,
     kb_name: Optional[str] = None,
+    images: List[UploadFile] = File(None),
     db: AsyncSession = Depends(get_db)
 ):
     """
@@ -290,6 +299,7 @@ async def query_chat(
         token: Authentication token
         web_search: Whether to perform web search for up-to-date information
         kb_name: Name of knowledge base to query (if None, use document context)
+        images: Optional list of image files to include with the query
         db: Database session
         
     Returns:
@@ -321,8 +331,52 @@ async def query_chat(
         if not query:
             raise HTTPException(status_code=400, detail="Missing query")
 
-    # Setup common resources
-    cancel_event, memory, system_prompt = await setup_query(chat_id, query, token, db)
+    # Verify user authorization first
+    user = await get_user_from_token(token, db)
+    await verify_chat_ownership(chat_id, user.id, db)
+    
+    # Create a cancellation event for this query
+    cancel_event = register_active_query(chat_id)
+    
+    # Process and save image files as separate user messages before saving the query
+    if images:
+        for img in images:
+            if img is not None:
+                try:
+                    # Read image content
+                    image_data = await img.read()
+                    
+                    # Convert to base64
+                    import base64
+                    base64_image = base64.b64encode(image_data).decode('utf-8')
+                    
+                    # Generate a unique filename if none exists
+                    img_filename = img.filename or f"image_{uuid.uuid4()}.jpg"
+                    
+                    # Create context with image metadata
+                    img_message_context = json.dumps({
+                        "type": "image",
+                        "filename": img_filename,
+                        "content_type": img.content_type
+                    })
+                    
+                    # Save image as a separate user message - base64 content goes directly in the content field
+                    # and metadata goes in the context field
+                    await save_message(db, chat_id, "user", base64_image, context=img_message_context)
+                    
+                    # Reset file pointer for future reads
+                    await img.seek(0)
+                except Exception as e:
+                    logger.error(f"Error saving image message: {e}")
+    
+    # Now save the text query as a user message
+    await save_message(db, chat_id, "user", query)
+    
+    # Load conversation history (now includes image messages)
+    memory = await load_memory(db, chat_id)
+    
+    # Get system instructions
+    system_prompt = app.state.system_prompt
     
     # Prepare document context if available
     document_context = ""
@@ -384,18 +438,56 @@ async def query_chat(
             # Create message chain to send to the LLM
             conversation = [SystemMessage(content=system_prompt)] + memory.chat_memory.messages
             
+            # Process image files if provided
+            image_contents = []
+            if images:
+                for img in images:
+                    if img is not None:
+                        # Read image content
+                        image_data = await img.read()
+                        # Convert to base64
+                        import base64
+                        base64_image = base64.b64encode(image_data).decode('utf-8')
+                        # Store image metadata and content
+                        image_contents.append({
+                            "filename": img.filename,
+                            "content": base64_image,
+                            "content_type": img.content_type
+                        })
+                        # Reset file pointer for potential future reads
+                        await img.seek(0)
+            
             # Add document context to the query if available
+            enhanced_query = query
             if document_context:
                 enhanced_query = f"{query}\n{document_context}"
-                conversation.append(HumanMessage(content=enhanced_query))
-            else:
-                conversation.append(HumanMessage(content=query))
-
+                
+            # Create the message content with text and images if available
+            message_content = enhanced_query
+            
+            # If we have images, create a multimodal message content
+            if image_contents:
+                message_content = [
+                    {"type": "text", "text": enhanced_query}
+                ]
+                # Add each image as content part
+                for img in image_contents:
+                    message_content.append({
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:{img['content_type']};base64,{img['content']}"
+                        }
+                    })
+            
+            # Add user message with text and images
+            conversation.append(HumanMessage(content=message_content))
+            
             # Use llm_helpers to process langchain messages
             async def message_generator():
                 async for content in await process_langchain_messages(
                     messages=conversation,
-                    model_config="default",
+                    model_config="default",  # Use default model config as base
+                    custom_config=MULTIMODAL_MODEL_CONFIG if image_contents else None,  # Apply multimodal config if images exist
                     stream=True
                 ):
                     # Check if the query has been cancelled
