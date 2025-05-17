@@ -13,7 +13,7 @@ import datetime
 import logging
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from database import SessionLocal, ChatSessionLocal, Chat, Message, User, get_engine_status
+from database import SessionLocal, Chat, Message, User, get_engine_status
 from fastapi import HTTPException
 from langchain.memory import ConversationBufferWindowMemory
 
@@ -44,7 +44,6 @@ async def get_db():
         await db.rollback()
         raise
     finally:
-        print("!!!DB CLOSE()!!!")
         # Safe close that checks session state first
         if db.is_active:
             try:
@@ -217,27 +216,3 @@ async def get_db_status_data():
             "error": str(e),
             "timestamp": datetime.datetime.now().isoformat()
         }
-
-async def get_chat_db():
-    """
-    Async dependency to provide a dedicated chat database session
-    
-    This uses a separate connection pool to prevent UI operations
-    from being blocked by LLM query operations.
-    
-    Yields:
-        AsyncSession: Chat database session
-    """
-    db = ChatSessionLocal()
-    try:
-        yield db
-    except Exception as e:
-        logger.error(f"Exception in get_chat_db: {e}")
-        await db.rollback()
-        raise
-    finally:
-        if db.is_active:
-            try:
-                await db.close()
-            except Exception as e:
-                logger.error(f"Error closing chat DB session: {e}")

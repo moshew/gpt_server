@@ -235,11 +235,9 @@ async def setup_query(
             logger.error(f"Error in background save for user message: {e}")
             # Don't close the session here, it will be used for the assistant message
             
-    # Start the save task
-    asyncio.create_task(save_message_task())
+    save_task = asyncio.create_task(save_message_task())
     
-    # Load conversation history using the original db session, not the task_db
-    # This keeps the task_db free for message saving operations
+    # Load conversation history
     memory = await load_memory(db, chat_id)
     
     # Get system instructions
@@ -391,6 +389,11 @@ async def query_chat(
             background=BackgroundTasks()
         )
 
+    # Verify user authorization for GET request
+    user = await get_user_from_token(token, db)
+    await verify_chat_ownership(chat_id, user.id, db)
+
+                
     # Process a user query, either directly or by session_id.
     if session_id:
         # Retrieve session without removing it yet - will be removed when first data chunk arrives
