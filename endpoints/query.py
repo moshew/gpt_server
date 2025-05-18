@@ -404,13 +404,8 @@ async def query_chat(
             from query_web import web_search_handler
             
             # Pass the database session to allow access to chat history
-            async with SessionLocal() as db:    
-                web_context = await web_search_handler.get_document_context(
-                    str(chat_id), 
-                    query, 
-                    top_k=5,
-                    db=db  # Pass database session for history access
-                )
+            async with SessionLocal() as db:
+                web_context = await web_search_handler.get_document_context(db=db, chat_id=str(chat_id), query=query, top_k=5)
             
             if web_context:
                 # Add web search context either on top of document context or as the only context

@@ -338,10 +338,10 @@ Modified search query with context (keep it focused, clear, precise and concise,
     
     async def get_document_context(
         self, 
+        db: AsyncSession,
         chat_id: str, 
-        query: str, 
-        top_k: int = 5,
-        db: AsyncSession  # Add database session parameter
+        query: str,
+        top_k: int = 5
     ) -> str:
         """
         Get document context from web search with enhanced query from conversation history
@@ -349,8 +349,8 @@ Modified search query with context (keep it focused, clear, precise and concise,
         Args:
             chat_id: Chat identifier
             query: User's question
-            top_k: Number of results to fetch (default 5)
             db: Database session (optional)
+            top_k: Number of results to fetch (default 5)
             
         Returns:
             Document context from web search
