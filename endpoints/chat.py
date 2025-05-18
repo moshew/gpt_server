@@ -21,6 +21,7 @@ from database import Chat, Message, File
 from app_init import app
 from auth import get_current_user
 from db_manager import get_db, get_new_db_session, safe_close_session
+from database import SessionLocal
 from utils import run_in_executor, call_llm
 
 # Class for chat creation request
@@ -60,28 +61,27 @@ async def generate_chat_title(message: str) -> str:
 # Get user chats endpoint
 @app.get("/chats/")
 async def get_user_chats(
-    user = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    user = Depends(get_current_user)
 ):
     """
     Get the 10 most recent chats for a user
     
     Args:
         user: User object from authentication dependency
-        db: Database session
         
     Returns:
         List of user's 10 most recent chats
     """
     try:
         # Query with limit to get only the 10 most recent chats
-        result = await db.execute(
-            select(Chat)
-            .filter(Chat.user_id == user.id)
-            .order_by(Chat.created_at.desc())
-            .limit(10)
-        )
-        chats = result.scalars().all()
+        async with SessionLocal() as db:
+            result = await db.execute(
+                select(Chat)
+                .filter(Chat.user_id == user.id)
+                .order_by(Chat.created_at.desc())
+                .limit(10)
+            )
+            chats = result.scalars().all()
         
         return {
             "chats": [
