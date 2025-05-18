@@ -350,7 +350,7 @@ async def query_chat(
         image_contents = []
 
     # Create dedicated DB session and setup resources
-    cancel_event, memory, system_prompt, task_db = await setup_query(chat_id, query, token)
+    cancel_event, memory, system_prompt = await setup_query(chat_id, query, token)
     
     # Save images to DB if they were included in the session
     if image_contents:
@@ -363,7 +363,7 @@ async def query_chat(
                     "format":  img["content_type"]
                 })
                 
-                # Save image as a separate user message using the dedicated task_db
+                # Save image as a separate user message
                 async with SessionLocal() as db:
                     await save_message(db, chat_id, "user", img_json)
             except Exception as e:
@@ -683,12 +683,12 @@ async def query_image(
         # Unregister the query since it's complete
         unregister_active_query(chat_id)
         
-        # Save the assistant message using the task_db created earlier
+        # Save the assistant message
         if result:
             # Use create_save_response_task to ensure proper order
             message_content = json.dumps({"type": "image", "filename": result.get('filename', ''), "url": result.get('url', ''), "created": result.get('created', '')}) if "error" not in result else result["error"]
             
-            # Use the same function as other endpoints with the existing task_db
+            # Use the same function as other endpoints
             async with SessionLocal() as db:
                 await save_message(db, chat_id, "assistant", message_content)
 
