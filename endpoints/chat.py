@@ -101,8 +101,7 @@ async def get_user_chats(
 @app.get("/chat_data/{chat_id}")
 async def get_chat_data(
     chat_id: int,
-    user = Depends(get_current_user), 
-    db: AsyncSession = Depends(get_db)
+    user = Depends(get_current_user)
 ):
     """
     Get all messages and files for a specific chat, separating document and code files,
@@ -111,32 +110,32 @@ async def get_chat_data(
     Args:
         chat_id: ID of the chat to get data from
         user: User object from authentication dependency
-        db: Database session
         
     Returns:
         Dict containing chat information, messages, document files, and code files
     """
     try:
+        async with SessionLocal() as db:
         # Check chat ownership
-        result = await db.execute(
-            select(Chat).filter(Chat.id == chat_id, Chat.user_id == user.id)
-        )
-        chat = result.scalars().first()
+            result = await db.execute(
+                select(Chat).filter(Chat.id == chat_id, Chat.user_id == user.id)
+            )
+            chat = result.scalars().first()
         
-        if not chat:
-            raise HTTPException(status_code=404, detail="Chat not found or access denied")
+            if not chat:
+                raise HTTPException(status_code=404, detail="Chat not found or access denied")
         
-        # Query all messages for this chat ordered by timestamp
-        result = await db.execute(
-            select(Message).filter(Message.chat_id == chat_id).order_by(Message.timestamp)
-        )
-        messages = result.scalars().all()
+            # Query all messages for this chat ordered by timestamp
+            result = await db.execute(
+                select(Message).filter(Message.chat_id == chat_id).order_by(Message.timestamp)
+            )
+            messages = result.scalars().all()
         
-        # Query all files for this chat
-        result = await db.execute(
-            select(File).filter(File.chat_id == chat_id)
-        )
-        files = result.scalars().all()
+            # Query all files for this chat
+            result = await db.execute(
+                select(File).filter(File.chat_id == chat_id)
+            )
+            files = result.scalars().all()
         
         # Separate files by type
         doc_files = [file for file in files if file.file_type == "doc"]
@@ -188,43 +187,44 @@ async def get_chat_data(
 
 # Create new chat with default name endpoint
 @app.post("/new_chat/")
-async def new_chat(user = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+async def new_chat(
+    user = Depends(get_current_user)
+):
     """
     Create a new chat with a default name (fast creation without waiting for name generation)
     
     Args:
         user: User object from authentication dependency
-        db: Database session
         
     Returns:
         Chat information with default name
     """
-    try:
-        # Create default chat name using current timestamp
-        default_chat_name = f"New Chat"
+    async with SessionLocal() as db:
+        try:
+            # Create default chat name using current timestamp
+            default_chat_name = f"New Chat"
         
-        # Create new chat in database
-        chat = Chat(user_id=user.id, chat_name=default_chat_name)
-        db.add(chat)
-        await db.commit()
-        await db.refresh(chat)
-        
-        return {
-            "id": chat.id, 
-            "name": chat.chat_name
-        }
-        
-    except Exception as e:
-        await db.rollback()
-        print(f"Error creating new chat: {e}")
-        raise HTTPException(status_code=500, detail=f"Error creating new chat: {str(e)}")
+            # Create new chat in database
+            chat = Chat(user_id=user.id, chat_name=default_chat_name)
+            db.add(chat)
+            await db.commit()
+            await db.refresh(chat)
+            
+            return {
+                "id": chat.id, 
+                "name": chat.chat_name
+            }
+            
+        except Exception as e:
+            await db.rollback()
+            print(f"Error creating new chat: {e}")
+            raise HTTPException(status_code=500, detail=f"Error creating new chat: {str(e)}")
 
 # Update chat name based on message
 @app.post("/update_chat_name/")
 async def update_chat_name(
     chat_name_request: ChatNameRequest, 
-    user = Depends(get_current_user), 
-    db: AsyncSession = Depends(get_db)
+    user = Depends(get_current_user)
 ):
     """
     Update chat name based on a provided message
@@ -232,52 +232,51 @@ async def update_chat_name(
     Args:
         chat_name_request: Request with chat ID and message for generating name
         user: User object from authentication dependency
-        db: Database session
         
     Returns:
         Updated chat information with the generated name
     """
-    try:
-        # Get the chat ID from the request
-        chat_id = chat_name_request.chat_id
-       
-        result = await db.execute(
-            select(Chat).filter(Chat.id == chat_id, Chat.user_id == user.id)
-        )
-        chat = result.scalars().first()
+    async with SessionLocal() as db:
+        try:
+            # Get the chat ID from the request
+            chat_id = chat_name_request.chat_id
+        
+            result = await db.execute(
+                select(Chat).filter(Chat.id == chat_id, Chat.user_id == user.id)
+            )
+            chat = result.scalars().first()
 
-        if not chat:
-            raise HTTPException(status_code=404, detail="Chat not found or access denied")
-        
-        # Generate chat name based on the message
-        chat_name = await generate_chat_title(chat_name_request.message)
-        
-        # If generation failed or returned empty, use a fallback name
-        if not chat_name:
-            chat_name = f"Chat {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}"
-        
-        # Update chat name in database
-        chat.chat_name = chat_name
-        await db.commit()
-        await db.refresh(chat)
-        
-        return {
-            "id": chat.id, 
-            "name": chat.chat_name,
-            "status": "updated"
-        }
-        
-    except Exception as e:
-        await db.rollback()
-        print(f"Error updating chat name: {e}")
-        raise HTTPException(status_code=500, detail=f"Error updating chat name: {str(e)}")
+            if not chat:
+                raise HTTPException(status_code=404, detail="Chat not found or access denied")
+            
+            # Generate chat name based on the message
+            chat_name = await generate_chat_title(chat_name_request.message)
+            
+            # If generation failed or returned empty, use a fallback name
+            if not chat_name:
+                chat_name = f"Chat {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}"
+            
+            # Update chat name in database
+            chat.chat_name = chat_name
+            await db.commit()
+            await db.refresh(chat)
+            
+            return {
+                "id": chat.id, 
+                "name": chat.chat_name,
+                "status": "updated"
+            }
+            
+        except Exception as e:
+            await db.rollback()
+            print(f"Error updating chat name: {e}")
+            raise HTTPException(status_code=500, detail=f"Error updating chat name: {str(e)}")
 
 # Create new chat with automatically generated name based on first message
 @app.post("/new_named_chat/")
 async def new_named_chat(
     chat_request: ChatRequest, 
-    user = Depends(get_current_user), 
-    db: AsyncSession = Depends(get_db)
+    user = Depends(get_current_user)
 ):
     """
     Create a new chat with the first question, generating a chat name synchronously
@@ -285,45 +284,40 @@ async def new_named_chat(
     Args:
         chat_request: Request with the first message
         user: User object from authentication dependency
-        db: Database session
         
     Returns:
         Chat information with the generated name
     """
-    try:
-        # First create the chat with a temporary name
-        temp_chat_name = f"Chat {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}"
-        
-        # Create new chat in database
-        chat = Chat(user_id=user.id, chat_name=temp_chat_name)
-        db.add(chat)
-        await db.commit()
-        await db.refresh(chat)
-        
-        # Generate chat name based on the message
-        chat_name = await generate_chat_title(chat_request.message)
-        
-        # If generation failed or returned empty, keep the temporary name
-        if not chat_name:
-            chat_name = temp_chat_name
-        
-        # Update chat with the generated name
-        chat.chat_name = chat_name
-        await db.commit()
-        await db.refresh(chat)
-        
-        return {
-            "id": chat.id, 
-            "name": chat.chat_name,
-            "status": "created"
-        }
-        
-    except Exception as e:
-        await db.rollback()
-        print(f"Error creating new chat: {e}")
-        raise HTTPException(status_code=500, detail=f"Error creating new chat: {str(e)}")
-
-async def test_generate_chat_title():
-    # Call the function
-    test_message = "write a python program"
-    result = await generate_chat_title(test_message)
+    async with SessionLocal() as db:
+        try:
+            # First create the chat with a temporary name
+            temp_chat_name = f"Chat {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}"
+            
+            # Create new chat in database
+            chat = Chat(user_id=user.id, chat_name=temp_chat_name)
+            db.add(chat)
+            await db.commit()
+            await db.refresh(chat)
+            
+            # Generate chat name based on the message
+            chat_name = await generate_chat_title(chat_request.message)
+            
+            # If generation failed or returned empty, keep the temporary name
+            if not chat_name:
+                chat_name = temp_chat_name
+            
+            # Update chat with the generated name
+            chat.chat_name = chat_name
+            await db.commit()
+            await db.refresh(chat)
+            
+            return {
+                "id": chat.id, 
+                "name": chat.chat_name,
+                "status": "created"
+            }
+            
+        except Exception as e:
+            await db.rollback()
+            print(f"Error creating new chat: {e}")
+            raise HTTPException(status_code=500, detail=f"Error creating new chat: {str(e)}")
