@@ -17,6 +17,8 @@ import time
 import os
 import json
 import logging
+import base64
+
 from typing import Optional, Dict, Any, List, Union, AsyncGenerator
 from fastapi import Depends, BackgroundTasks, HTTPException, Query, File, UploadFile, Form, Request
 from fastapi.responses import StreamingResponse, JSONResponse
@@ -29,6 +31,7 @@ from contextlib import asynccontextmanager
 from app_init import app
 from auth import get_user_from_token, verify_chat_owner, verify_chat_ownership
 from db_manager import get_db, get_new_db_session, safe_close_session, load_memory, save_message
+from database import SessionLocal
 from utils import process_langchain_messages
 from utils.sse import stream_text_as_sse, stream_generator_as_sse
 from rag_documents import get_document_rag, DocumentRAG
@@ -42,6 +45,12 @@ pending_queries = {}
 
 # Define path for knowledge bases
 KNOWLEDGE_BASE_DIR = os.environ.get("KNOWLEDGE_BASE_DIR", "knowledgebase")
+CONTENT_TYPE_TO_EXT = {
+    "image/png": "png",
+    "image/gif": "gif",
+    "image/webp": "webp",
+    "image/svg+xml": "svg"
+}
 
 # Configure logging
 logging.basicConfig(
@@ -153,8 +162,7 @@ async def schedule_active_query_cleanup():
 @app.post("/stop_query/{chat_id}")
 async def stop_query(
     chat_id: int,
-    token: str,
-    db: AsyncSession = Depends(get_db)
+    token: str
 ):
     """
     Stop an active query for a specific chat
@@ -162,14 +170,14 @@ async def stop_query(
     Args:
         chat_id: ID of the chat with the query to stop
         token
-        db: Database session
         
     Returns:
         Status message indicating whether the query was stopped
     """
-    user = await get_user_from_token(token, db)
-    await verify_chat_ownership(chat_id, user.id, db)
-    
+    async with SessionLocal() as db:
+        user = await get_user_from_token(token, db)
+        await verify_chat_ownership(chat_id, user.id, db)
+        
     try:
         # Check if there's an active query for this chat
         chat_id_str = str(chat_id)
@@ -203,8 +211,7 @@ async def stop_query(
 async def setup_query(
     chat_id: int,
     query: str,
-    token: str,
-    db: AsyncSession
+    token: str
 ) -> tuple:
     """
     Setup common resources for a query
@@ -213,71 +220,20 @@ async def setup_query(
         chat_id: Chat identifier
         query: User's question
         token: Authentication token
-        db: Database session
         
     Returns:
-        A tuple of (cancel_event, memory, system_prompt, task_db)
+        A tuple of (cancel_event, memory, system_prompt)
     """
-    user = await get_user_from_token(token, db)
-    await verify_chat_ownership(chat_id, user.id, db)
-    
+    async with SessionLocal() as db:
+        user = await get_user_from_token(token, db)
+        await verify_chat_ownership(chat_id, user.id, db)
+        await save_message(db, chat_id, "user", query)
+        # Load conversation history
+        memory = await load_memory(db, chat_id)
+        
     # Create a cancellation event for this query
     cancel_event = register_active_query(chat_id)
-    
-    # Create a new independent DB session for saving messages
-    task_db = await get_new_db_session()
-    
-    # Start saving the user message in background without waiting for it
-    async def save_message_task():
-        try:
-            await save_message(task_db, chat_id, "user", query)
-        except Exception as e:
-            logger.error(f"Error in background save for user message: {e}")
-            # Don't close the session here, it will be used for the assistant message
-            
-    save_task = asyncio.create_task(save_message_task())
-    
-    # Load conversation history
-    memory = await load_memory(db, chat_id)
-    
-    # Get system instructions
-    system_prompt = app.state.system_prompt
-    
-    # Return everything without waiting for the save to complete
-    # Include the task_db so we can use it for saving assistant response
-    return (cancel_event, memory, system_prompt, task_db)
-
-async def create_save_response_task(chat_id: int, full_response: str, task_db: AsyncSession = None):
-    """
-    Create a task to save the assistant's response to the database
-    
-    Args:
-        chat_id: Chat identifier
-        full_response: The complete response to save
-        task_db: Database session already created for this chat (to reuse)
-    """
-    # Instead of creating a background task that might get lost,
-    # perform the save directly and make sure it completes
-    try:
-        # Use the provided DB session or create a new one if none
-        session_to_use = task_db
-        should_close = False
-        
-        if session_to_use is None or not hasattr(session_to_use, 'is_active') or not session_to_use.is_active:
-            session_to_use = await get_new_db_session()
-            should_close = True
-            
-        try:
-            # Actually save the message and wait for it to complete
-            await save_message(session_to_use, chat_id, "assistant", full_response)
-            logger.info(f"Assistant message saved successfully for chat {chat_id}")
-        finally:
-            # Only close the session if we created it here or if we're done with it
-            if should_close or (session_to_use is not None and hasattr(session_to_use, 'is_active')):
-                await safe_close_session(session_to_use)
-                logger.debug(f"Session closed after assistant message save for chat {chat_id}")
-    except Exception as e:
-        logger.error(f"Error saving assistant message for chat {chat_id}: {e}")
+    return (cancel_event, memory, app.state.system_prompt)
 
 @app.post("/start_query_session/{chat_id}")
 async def start_query_session(
@@ -317,24 +273,14 @@ async def start_query_session(
                     image_data = await img.read()
                     
                     # Convert to base64
-                    import base64
                     base64_image = base64.b64encode(image_data).decode('utf-8')
                     
                     # Get proper extension from content type
-                    extension = ".jpg"  # Default extension
-                    if img.content_type:
-                        if img.content_type == "image/png":
-                            extension = ".png"
-                        elif img.content_type == "image/gif":
-                            extension = ".gif"
-                        elif img.content_type == "image/webp":
-                            extension = ".webp"
-                        elif img.content_type == "image/svg+xml":
-                            extension = ".svg"
+                    extension = CONTENT_TYPE_TO_EXT.get(img.content_type, "jpg")
                     
                     # Store image metadata in session for later use in query_chat
                     session_data["images"].append({
-                        "filename": img.filename or f"image_{uuid.uuid4()}{extension}",
+                        "filename": img.filename or f"image_{uuid.uuid4()}.{extension}",
                         "content_type": img.content_type,
                         "base64": base64_image
                     })
@@ -355,7 +301,6 @@ async def query_chat(
     query: Optional[str] = None,
     session_id: Optional[str] = None,
     kb_name: Optional[str] = None,
-    db: AsyncSession = Depends(get_db)
 ):
     """
     Process general user queries and stream responses
@@ -371,7 +316,6 @@ async def query_chat(
         query: User's question (required if session_id is not provided)
         session_id: Optional session ID from start_query_session (required for image queries)
         kb_name: Name of knowledge base to query (if None, use document context)
-        db: Database session
         
     Returns:
         Streaming response in SSE (Server-Sent Events) format
@@ -389,11 +333,6 @@ async def query_chat(
             background=BackgroundTasks()
         )
 
-    # Verify user authorization for GET request
-    user = await get_user_from_token(token, db)
-    await verify_chat_ownership(chat_id, user.id, db)
-
-                
     # Process a user query, either directly or by session_id.
     if session_id:
         # Retrieve session without removing it yet - will be removed when first data chunk arrives
@@ -411,35 +350,22 @@ async def query_chat(
         image_contents = []
 
     # Create dedicated DB session and setup resources
-    cancel_event, memory, system_prompt, task_db = await setup_query(chat_id, query, token, db)
+    cancel_event, memory, system_prompt, task_db = await setup_query(chat_id, query, token)
     
     # Save images to DB if they were included in the session
     if image_contents:
         for img in image_contents:
             try:
-                # Get image format from content type
-                img_format = "png"  # Default format
-                if img["content_type"]:
-                    if "jpeg" in img["content_type"] or "jpg" in img["content_type"]:
-                        img_format = "jpg"
-                    elif "png" in img["content_type"]:
-                        img_format = "png"
-                    elif "gif" in img["content_type"]:
-                        img_format = "gif"
-                    elif "webp" in img["content_type"]:
-                        img_format = "webp"
-                    elif "svg" in img["content_type"]:
-                        img_format = "svg"
-                
                 # Create JSON structure for image
                 img_json = json.dumps({
                     "type": "image",
                     "data": img["base64"],
-                    "format": img_format
+                    "format":  img["content_type"]
                 })
                 
                 # Save image as a separate user message using the dedicated task_db
-                await save_message(task_db, chat_id, "user", img_json)
+                async with SessionLocal() as db:
+                    await save_message(db, chat_id, "user", img_json)
             except Exception as e:
                 logger.error(f"Error saving image message from session: {e}")
     
@@ -478,12 +404,13 @@ async def query_chat(
             from query_web import web_search_handler
             
             # Pass the database session to allow access to chat history
-            web_context = await web_search_handler.get_document_context(
-                str(chat_id), 
-                query, 
-                top_k=5,
-                db=db  # Pass database session for history access
-            )
+            async with SessionLocal() as db:    
+                web_context = await web_search_handler.get_document_context(
+                    str(chat_id), 
+                    query, 
+                    top_k=5,
+                    db=db  # Pass database session for history access
+                )
             
             if web_context:
                 # Add web search context either on top of document context or as the only context
@@ -563,7 +490,8 @@ async def query_chat(
             
             # Skip saving if the query was cancelled or empty response
             if full_response:
-                await create_save_response_task(chat_id, full_response, task_db)
+                async with SessionLocal() as db:
+                    await save_message(db, chat_id, "assistant", full_response)
             
         except Exception as e:
             # Handle errors and send them to the user
@@ -586,8 +514,7 @@ async def query_chat(
 async def query_code(
     chat_id: int, 
     query: str, 
-    token: str,
-    db: AsyncSession = Depends(get_db)
+    token: str
 ):
     """
     Process code-specific queries by including all code files in the prompt
@@ -596,13 +523,12 @@ async def query_code(
         chat_id: Chat identifier
         query: User's question
         token: Authentication token
-        db: Database session
         
     Returns:
         Streaming response in SSE (Server-Sent Events) format
     """
     # Setup common resources
-    cancel_event, memory, system_prompt, task_db = await setup_query(chat_id, query, token, db)
+    cancel_event, memory, system_prompt = await setup_query(chat_id, query, token)
     
     # Get code context from the external module
     code_context = get_code_context(chat_id)
@@ -649,7 +575,8 @@ async def query_code(
             
             # Skip saving if the query was cancelled or empty response
             if full_response:
-                await create_save_response_task(chat_id, full_response, task_db)
+                async with SessionLocal() as db:
+                    await save_message(db, chat_id, "assistant", full_response)
             
         except Exception as e:
             # Handle errors and send them to the user
@@ -678,7 +605,6 @@ async def query_image(
     quality: str = Form("standard"),
     style: str = Form("natural"),
     token: str = Form(...),
-    db: AsyncSession = Depends(get_db)
 ):
     """
     Optimized endpoint for generating images within a chat
@@ -699,24 +625,13 @@ async def query_image(
     """
     try:
         # Authentication and authorization
-        user = await get_user_from_token(token, db)
-        await verify_chat_ownership(chat_id, user.id, db)
-        
+        async with SessionLocal() as db:
+            user = await get_user_from_token(token, db)
+            await verify_chat_ownership(chat_id, user.id, db)
+            await save_message(db, chat_id, "user", prompt)
+
         # Register this query for potential cancellation
         cancel_event = register_active_query(chat_id)
-        
-        # Create a new independent DB session for saving messages
-        task_db = await get_new_db_session()
-        
-        # Save the user's message using a background task
-        async def save_message_task():
-            try:
-                await save_message(task_db, chat_id, "user", prompt)
-            except Exception as e:
-                logger.error(f"Error in background save for user message: {e}")
-                # Don't close the session here, it will be used for the assistant message
-                
-        save_task = asyncio.create_task(save_message_task())
         
         # Extract base URL from the request
         base_url = str(request.base_url).rstrip('/')
@@ -779,7 +694,8 @@ async def query_image(
             message_content = json.dumps({"type": "image", "filename": result.get('filename', ''), "url": result.get('url', ''), "created": result.get('created', '')}) if "error" not in result else result["error"]
             
             # Use the same function as other endpoints with the existing task_db
-            await create_save_response_task(chat_id, message_content, task_db)
+            async with SessionLocal() as db:
+                await save_message(db, chat_id, "assistant", message_content)
 
         # Return response
         return result

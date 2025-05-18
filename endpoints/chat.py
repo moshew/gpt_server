@@ -20,7 +20,6 @@ from database import Chat, Message, File
 
 from app_init import app
 from auth import get_current_user
-from db_manager import get_db, get_new_db_session, safe_close_session
 from database import SessionLocal
 from utils import run_in_executor, call_llm
 

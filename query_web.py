@@ -341,7 +341,7 @@ Modified search query with context (keep it focused, clear, precise and concise,
         chat_id: str, 
         query: str, 
         top_k: int = 5,
-        db: Optional[AsyncSession] = None,  # Add database session parameter
+        db: AsyncSession  # Add database session parameter
     ) -> str:
         """
         Get document context from web search with enhanced query from conversation history
@@ -360,36 +360,35 @@ Modified search query with context (keep it focused, clear, precise and concise,
         
         # If database session is provided, load conversation history
         enhanced_query = query
-        if db:
-            try:
-                # Load chat history
-                chat_id_int = int(chat_id)
-                result = await db.execute(
-                    select(Message).where(Message.chat_id == chat_id_int).order_by(Message.timestamp)
-                )
-                messages = result.scalars().all()
+        try:
+            # Load chat history
+            chat_id_int = int(chat_id)
+            result = await db.execute(
+                select(Message).where(Message.chat_id == chat_id_int).order_by(Message.timestamp)
+            )
+            messages = result.scalars().all()
+            
+            # Convert to simple data structure
+            history = [
+                {"sender": msg.sender, "content": msg.content}
+                for msg in messages
+            ]
+            
+            # Only check for enhancing if we have history and this isn't the first question
+            if history and len(history) >= 2:
+                # Count previous user messages (excluding the current one)
+                previous_user_messages = sum(1 for msg in history[:-1] if msg.get("sender") == "user")
                 
-                # Convert to simple data structure
-                history = [
-                    {"sender": msg.sender, "content": msg.content}
-                    for msg in messages
-                ]
-                
-                # Only check for enhancing if we have history and this isn't the first question
-                if history and len(history) >= 2:
-                    # Count previous user messages (excluding the current one)
-                    previous_user_messages = sum(1 for msg in history[:-1] if msg.get("sender") == "user")
-                    
-                    if previous_user_messages > 0:
-                        # There are previous user messages, so this is a follow-up question
-                        # Generate enhanced search query
-                        enhanced_query = await self.generate_enhanced_search_query(query, history)
-                    else:
-                        logger.info(f"First question detected for chat {chat_id}. Using original query.")
+                if previous_user_messages > 0:
+                    # There are previous user messages, so this is a follow-up question
+                    # Generate enhanced search query
+                    enhanced_query = await self.generate_enhanced_search_query(query, history)
                 else:
-                    logger.info(f"Insufficient history for chat {chat_id}. Using original query.")
-            except Exception as e:
-                logger.error(f"Error loading chat history: {e}")
+                    logger.info(f"First question detected for chat {chat_id}. Using original query.")
+            else:
+                logger.info(f"Insufficient history for chat {chat_id}. Using original query.")
+        except Exception as e:
+            logger.error(f"Error loading chat history: {e}")
         
         # Get web search context with enhanced query
         context = await self.get_web_search_context(enhanced_query)
