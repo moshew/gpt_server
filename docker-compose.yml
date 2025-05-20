@@ -16,13 +16,24 @@ services:
   postgres:
     image: postgres:14
     environment:
-      - POSTGRES_PASSWORD=postgres
-      - POSTGRES_USER=postgres
-      - POSTGRES_DB=chat_app
+      - POSTGRES_PASSWORD=Aa123456
+      - POSTGRES_USER=gptadmin
+      - POSTGRES_DB=gpt
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  pgadmin:
+    image: dpage/pgadmin4
+    environment:
+      - PGADMIN_DEFAULT_EMAIL=admin@gpt.com
+      - PGADMIN_DEFAULT_PASSWORD=Aa123456
+    ports:
+      - "5050:80"
+    depends_on:
+      - postgres
     restart: unless-stopped
 
 volumes:
