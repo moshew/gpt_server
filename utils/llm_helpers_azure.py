@@ -306,7 +306,8 @@ async def process_langchain_messages(
     messages: List[BaseMessage],
     model_config: str = "default",
     custom_config: Optional[Dict[str, Any]] = None,
-    stream: bool = True
+    stream: bool = True,
+    deployment_name: Optional[str] = None
 ) -> Union[str, AsyncGenerator[str, None]]:
     """
     Process a list of langchain messages using the configured Azure LLM
@@ -316,6 +317,7 @@ async def process_langchain_messages(
         model_config: Name of a predefined configuration
         custom_config: Custom configuration parameters
         stream: Whether to stream the response
+        deployment_name: Optional specific model deployment name to use (overrides model_config)
         
     Returns:
         Response from the LLM either as a string or a generator
@@ -331,6 +333,15 @@ async def process_langchain_messages(
         elif isinstance(msg, AIMessage):
             openai_messages.append({"role": "assistant", "content": msg.content})
         # Skip other message types
+    
+    # Create or update custom config with deployment_name if provided
+    if deployment_name:
+        # Convert deployment_name to lowercase
+        deployment_name = deployment_name.lower()
+        if custom_config is None:
+            custom_config = {"deployment_name": deployment_name}
+        else:
+            custom_config = {**custom_config, "deployment_name": deployment_name}
     
     # Use the general-purpose call_llm function with the converted messages
     return await call_llm(
