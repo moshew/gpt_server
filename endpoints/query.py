@@ -241,7 +241,6 @@ async def start_query_session(
     query: str = Form(...),
     images: List[UploadFile] = File(None),
     _: User = Depends(verify_chat_owner()),
-    db: AsyncSession = Depends(get_db)
 ):
     """
     Start a new query session by uploading a long query and optional images.
