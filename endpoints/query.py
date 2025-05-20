@@ -301,6 +301,7 @@ async def query_chat(
     query: Optional[str] = None,
     session_id: Optional[str] = None,
     kb_name: Optional[str] = None,
+    deployment_name: Optional[str] = "GPT-4.1",
 ):
     """
     Process general user queries and stream responses
@@ -316,6 +317,7 @@ async def query_chat(
         query: User's question (required if session_id is not provided)
         session_id: Optional session ID from start_query_session (required for image queries)
         kb_name: Name of knowledge base to query (if None, use document context)
+        deployment_name: Name of the model deployment to use (default: GPT-4.1)
         
     Returns:
         Streaming response in SSE (Server-Sent Events) format
@@ -459,7 +461,8 @@ async def query_chat(
                 async for content in await process_langchain_messages(
                     messages=conversation,
                     model_config="default",  # Use default model config as base
-                    stream=True
+                    stream=True,
+                    deployment_name=deployment_name  # Pass the deployment name to the model
                 ):
                     # Check if the query has been cancelled
                     if should_cancel_query(chat_id):
@@ -509,7 +512,8 @@ async def query_chat(
 async def query_code(
     chat_id: int, 
     query: str, 
-    token: str
+    token: str,
+    deployment_name: Optional[str] = "GPT-4.1"
 ):
     """
     Process code-specific queries by including all code files in the prompt
@@ -518,6 +522,7 @@ async def query_code(
         chat_id: Chat identifier
         query: User's question
         token: Authentication token
+        deployment_name: Name of the model deployment to use (default: GPT-4.1)
         
     Returns:
         Streaming response in SSE (Server-Sent Events) format
@@ -549,7 +554,8 @@ async def query_code(
                 async for content in await process_langchain_messages(
                     messages=conversation,
                     model_config="code",  # Use code-specific model configuration
-                    stream=True
+                    stream=True,
+                    deployment_name=deployment_name  # Pass the deployment name to the model
                 ):
                     # Check if the query has been cancelled
                     if should_cancel_query(chat_id):

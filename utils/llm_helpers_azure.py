@@ -22,27 +22,27 @@ from config import DALLE_API_KEY, DALLE_ENDPOINT, DALLE_API_VERSION
 # Model configurations for different use cases with Azure deployment names
 MODEL_CONFIGS = {
     "default": {
-        "deployment_name": "gpt-4.1",  # Azure deployment name for GPT-4o
+        "deployment_name": "gpt-4.1",
         "temperature": 0.2,
         "max_tokens": 30000,
     },
     "code": {
-        "deployment_name": "gpt-4.1",  # Azure deployment name for GPT-4o
+        "deployment_name": "gpt-4.1",
         "temperature": 0.1,
         "max_tokens": 4000,
     },
     "fast": {
-        "deployment_name": "gpt-4.1",  # Azure deployment name for fast responses
+        "deployment_name": "gpt-4.1",
         "temperature": 0.2,
         "max_tokens": 2000,
     },
     "precise": {
-        "deployment_name": "gpt-4.1",  # Azure deployment name for precise responses
+        "deployment_name": "gpt-4.1",
         "temperature": 0.1,
         "max_tokens": 500,
     },
     "mini": {
-        "deployment_name": "o3-mini",  # Azure deployment name for Mini model
+        "deployment_name": "o3-mini",
         "temperature": 0.3,
         "max_tokens": 1000,
     }
@@ -148,7 +148,7 @@ async def call_llm(
             config.update(custom_config)
             
         # Extract parameters
-        deployment_name = config.pop("deployment_name", "gpt-4o")
+        deployment_name = config.pop("deployment_name", "gpt-4.1")
         temperature = config.pop("temperature", 0.2)
         max_tokens = config.pop("max_tokens", 8000)
         
