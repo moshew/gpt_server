@@ -24,7 +24,6 @@ MODEL_CONFIGS = {
     "default": {
         "deployment_name": "gpt-4.1",
         "temperature": 0.2,
-        "max_tokens": 30000,
     },
     "code": {
         "deployment_name": "gpt-4.1",
