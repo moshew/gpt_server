@@ -9,6 +9,5 @@ Importing this package registers all endpoints with the FastAPI app.
 from . import chat
 from . import query
 from . import auth
-from . import code
 from . import files
 from . import root
