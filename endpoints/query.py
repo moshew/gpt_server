@@ -707,3 +707,19 @@ async def query_image(
             status_code=500,
             content={"error": error_message}
         )
+
+# Endpoint to get available models
+@app.get("/query/available_models")
+async def get_available_models():
+    """
+    Get a list of available AI models with their descriptions
+    
+    Returns:
+        List of model objects with name and description
+    """
+    models = [
+        {"name": model_name, "description": description}
+        for model_name, description in app.state.available_models
+    ]
+    
+    return JSONResponse(content={"models": models})

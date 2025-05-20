@@ -1,0 +1,6 @@
+GPT-4.1;Great for coding and analysis
+4.1-mini;faster for everyday tasks
+o3;Uses advanced reasoning
+o4-mini;Fast and advanced reasoning
+o4-mini-high;Great at coding and visual reasoning
+GPT-4o;Great for most task

@@ -13,7 +13,7 @@ import openai
 import asyncio
 import time, datetime
 import contextlib
-from typing import Optional, AsyncGenerator, Dict, Any, List, Set
+from typing import Optional, AsyncGenerator, Dict, Any, List, Set, Tuple
 from functools import partial
 from pydantic import BaseModel
 
@@ -92,6 +92,23 @@ class BackgroundTaskManager:
         """Check if a chat has running tasks"""
         return chat_id in self.tasks and len(self.tasks[chat_id]) > 0
 
+# Function to load available models from file
+def load_available_models() -> List[Tuple[str, str]]:
+    """Load available models from file"""
+    models = []
+    try:
+        with open("avaliable_models.txt", "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    parts = line.split(';', 1)
+                    if len(parts) == 2:
+                        model_name, description = parts
+                        models.append((model_name, description))
+    except Exception as e:
+        print(f"Error loading available models: {e}")
+    return models
+
 # Async function to load system prompt
 async def load_system_prompt():
     """Load system prompt from file asynchronously"""
@@ -111,6 +128,10 @@ async def startup_event():
     """Initialize components at application startup"""
     # Load system prompt
     app.state.system_prompt = await load_system_prompt()
+    
+    # Load available models
+    app.state.available_models = load_available_models()
+    print(f"Loaded {len(app.state.available_models)} available models")
     
     # Create directories if they don't exist
     os.makedirs("chats", exist_ok=True)
