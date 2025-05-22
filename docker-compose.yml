@@ -1,16 +1,18 @@
 version: '3.8'
 
 services:
-  api:
+  app:
     build: .
-    expose:
-      - "8000"
-    volumes:
-      - ./:/app
+    ports:
+      - "8000:8000"
     env_file:
       - .env
-    depends_on:
-      - postgres
+    volumes:
+      - ./chats:/app/chats
+      - ./code:/app/code
+      - ./images:/app/images
+      - ./knowledge_base:/app/knowledge_base
+      - ./rag_storage:/app/rag_storage
     restart: unless-stopped
 
   nginx:
@@ -20,7 +22,7 @@ services:
     volumes:
       - ./nginx.conf:/etc/nginx/nginx.conf
     depends_on:
-      - api
+      - app
     restart: unless-stopped
 
   postgres:
@@ -33,6 +35,8 @@ services:
       - "5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./init-db:/docker-entrypoint-initdb.d/
+
     restart: unless-stopped
 
   pgadmin:

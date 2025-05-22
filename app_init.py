@@ -136,6 +136,9 @@ async def startup_event():
     # Create directories if they don't exist
     os.makedirs("chats", exist_ok=True)
     os.makedirs("code", exist_ok=True)
+    os.makedirs("images", exist_ok=True)
+    os.makedirs("rag_storage", exist_ok=True)
+    os.makedirs("knowledgebase", exist_ok=True)
 
     # Initialize code analyzer
     #app.state.code_analyzer = CodeAnalysisHandler(chats_dir="chats")

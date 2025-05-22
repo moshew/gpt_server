@@ -13,7 +13,6 @@ knowledgebase/
 nltk_data/
 old/
 rag_storage/
-static/
 __pycache__/
 
 # Ignore file extensions

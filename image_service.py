@@ -28,7 +28,6 @@ class ImageService:
             images_dir: Directory for storing generated images
         """
         self.images_dir = images_dir
-        os.makedirs(images_dir, exist_ok=True)
         
     async def generate_image(
         self,

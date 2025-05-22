@@ -71,10 +71,6 @@ class DocumentRAG:
         self.docs_dir = docs_dir
         self.rag_storage_dir = rag_storage_dir
         
-        # Create base directories if they don't exist
-        os.makedirs(docs_dir, exist_ok=True)
-        os.makedirs(rag_storage_dir, exist_ok=True)
-    
     def _get_chat_folder(self, chat_id: str) -> str:
         """
         Get the document folder for a specific chat
