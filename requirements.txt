@@ -1,22 +1,33 @@
-fastapi
-uvicorn[standard]
-gunicorn
-langchain
-langchain_openai
-openai
+# Core Dependencies
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+gunicorn>=21.2.0
+python-dotenv>=1.0.0
+httpx>=0.25.0
+aiohttp>=3.9.0
+beautifulsoup4>=4.12.0
+certifi>=2023.11.17
+urllib3>=2.1.0
+
+# Database
 sqlalchemy[asyncio]>=2.0.0
-asyncpg
-psycopg2-binary
-bcrypt
-python-dotenv
-faiss-cpu
-numpy
-pypdf
-aiofiles
-pandas
-unstructured
-python-docx
-tiktoken
-langchain_community
-python-jose[cryptography]
-httpx
+asyncpg>=0.29.0
+psycopg2-binary>=2.9.9
+
+# Authentication & Security
+bcrypt>=4.0.1
+python-jose[cryptography]>=3.3.0
+
+# LLM & AI
+langchain>=0.0.350
+langchain_openai>=0.0.2
+langchain_community>=0.0.10
+openai>=1.3.0
+tiktoken>=0.5.1
+
+# Vector Search
+faiss-cpu>=1.7.4
+numpy>=1.24.0
+
+# File Operations
+aiofiles>=23.2.1
