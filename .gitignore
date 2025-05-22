@@ -17,3 +17,6 @@ __pycache__/
 
 # Ignore file extensions
 *.pem 
+
+# Exception for nginx SSL certificates
+!nginx/certs/*.pem 
