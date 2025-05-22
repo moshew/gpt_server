@@ -19,8 +19,11 @@ services:
     image: nginx:alpine
     ports:
       - "80:80"
+      - "443:443"
     volumes:
-      - ./nginx.conf:/etc/nginx/nginx.conf
+      - ./nginx/conf/nginx.conf:/etc/nginx/nginx.conf
+      - ./nginx/certs/cert.pem:/etc/nginx/ssl/cert.pem
+      - ./nginx/certs/key.pem:/etc/nginx/ssl/key.pem
     depends_on:
       - app
     restart: unless-stopped
@@ -36,7 +39,6 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./init-db:/docker-entrypoint-initdb.d/
-
     restart: unless-stopped
 
   pgadmin:
