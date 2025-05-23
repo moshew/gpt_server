@@ -287,9 +287,10 @@ async def verify_chat_ownership(chat_id: int, user_id: int, db: AsyncSession) ->
 
 
 #chat ownership verification
-def verify_chat_owner(request: Request):
+def verify_chat_owner():
     async def dependency(
         chat_id: int,
+        request: Request,
     ):
         async with SessionLocal() as db:
             user = await get_current_user(request, db)
