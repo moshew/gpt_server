@@ -189,7 +189,7 @@ async def process_archive(
                                 file_path = os.path.join(destination_folder, extracted_file)
                                 
                                 # Use async file system checks
-                                file_exists = await aiofiles.os.path.isfile(file_path)
+                                file_exists = await aiofiles.ospath.isfile(file_path)
                                 if not file_exists:
                                     continue
                                 
@@ -365,18 +365,29 @@ async def index_files(
         file_type: "doc" or "code"
         
     Returns:
-        Indexing results
+        Indexing results (only after all operations are fully complete)
     """
     results = {}
+    print(f"Starting indexing for chat {chat_id}, file_type: {file_type}")
+    
     # Index documents if requested
     if file_type == "doc":
         try:
+            print(f"Initializing document RAG for chat {chat_id}")
             doc_rag = get_document_rag(str(chat_id))
+            
+            print(f"Starting document indexing for chat {chat_id}")
+            # WAIT for complete indexing before returning
             doc_results = await doc_rag.index_documents(str(chat_id))
+            print(f"Document indexing completed for chat {chat_id}: {doc_results}")
+            
             results["documents"] = doc_results
         except Exception as e:
-            results["documents"] = {"error": f"Error indexing documents: {str(e)}"}
+            error_msg = f"Error indexing documents: {str(e)}"
+            print(f"Indexing error for chat {chat_id}: {error_msg}")
+            results["documents"] = {"error": error_msg}
     
+    print(f"All indexing operations completed for chat {chat_id}")
     return {
         "message": "Indexing complete",
         "results": results

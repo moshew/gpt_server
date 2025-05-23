@@ -37,6 +37,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from utils import embed_documents, embed_query
 
+# Import aiofiles for async file operations
+import aiofiles
+import aiofiles.os
+import aiofiles.ospath
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -143,6 +148,7 @@ class DocumentRAG:
     def _create_faiss_index(self, dimension: int, embeddings_array: np.ndarray) -> faiss.Index:
         """
         Create a FAISS index from embeddings, optimized for high-dimensional vectors
+        This function is designed to be run in an executor for thread safety
         
         Args:
             dimension: Embedding dimension
@@ -151,33 +157,43 @@ class DocumentRAG:
         Returns:
             FAISS index
         """
+        print(f"Creating FAISS index with {len(embeddings_array)} vectors of dimension {dimension}")
+        
         # For small document sets, use a simple flat index
         if len(embeddings_array) < 1000:
+            print("Using IndexFlatL2 for small dataset")
             index = faiss.IndexFlatL2(dimension)
             index.add(embeddings_array)
+            print(f"Successfully created flat index with {index.ntotal} vectors")
             return index
             
         # For larger document sets, use an IVF index for better search performance
         # with high-dimension vectors like text-embedding-3-large (3072 dimensions)
         
+        print("Using IndexIVFFlat for large dataset")
+        
         # Calculate number of clusters based on dataset size
         # Rule of thumb: sqrt(n) clusters where n is number of vectors
         n_clusters = min(4096, max(int(np.sqrt(len(embeddings_array))), 50))
+        print(f"Using {n_clusters} clusters for IVF index")
         
         quantizer = faiss.IndexFlatL2(dimension)  # The quantizer defines how vectors are assigned to clusters
         index = faiss.IndexIVFFlat(quantizer, dimension, n_clusters, faiss.METRIC_L2)
         
         # IVF indexes need to be trained before adding vectors
         if not index.is_trained:
+            print("Training IVF index...")
             index.train(embeddings_array)
         
         # Add vectors to the trained index
+        print("Adding vectors to index...")
         index.add(embeddings_array)
         
         # Set the number of nearest clusters to search
         # Higher values = more accurate but slower searches
         index.nprobe = min(n_clusters, 10)  # Search 10 clusters by default
         
+        print(f"Successfully created IVF index with {index.ntotal} vectors, {n_clusters} clusters, nprobe={index.nprobe}")
         return index
     
     def _save_index_files(self, index_file: str, faiss_index_file: str, 
@@ -214,7 +230,7 @@ class DocumentRAG:
             chat_id: Chat identifier
             
         Returns:
-            Indexing results
+            Indexing results (only after all operations are complete)
         """
         chat_folder = self._get_chat_folder(chat_id)
         rag_folder = self._get_rag_storage_folder(chat_id)
@@ -230,47 +246,48 @@ class DocumentRAG:
         lock_file = os.path.join(rag_folder, "indexing.lock")
         
         # Check if indexing is already in progress
-        if await run_in_executor(os.path.exists, lock_file):
+        if await aiofiles.ospath.exists(lock_file):
             # Check if the lock is stale (older than 1 hour)
-            lock_time = await run_in_executor(os.path.getmtime, lock_file)
+            lock_time = await aiofiles.os.path.getmtime(lock_file)
             if time.time() - lock_time < 3600:  # Less than 1 hour old
                 return {"message": "Indexing already in progress"}
             else:
                 # Remove stale lock
                 try:
-                    await run_in_executor(os.remove, lock_file)
+                    await aiofiles.os.remove(lock_file)
                 except Exception as e:
                     logger.error(f"Error removing stale lock: {e}")
                     # Continue anyway
         
         # Create lock file
         try:
-            await run_in_executor(
-                lambda: self._create_lock_file(lock_file)
-            )
+            await self._create_lock_file_async(lock_file)
         except Exception as e:
             logger.error(f"Error creating lock file: {e}")
             # Continue anyway
         
         try:
-            # List all document files in the folder recursively
+            # List all document files in the folder recursively using run_in_executor
             def find_all_files():
                 all_files = []
-                for root, dirs, files in os.walk(chat_folder):
-                    for file in files:
-                        full_path = os.path.join(root, file)
-                        # Get relative path from chat_folder
-                        relative_path = os.path.relpath(full_path, chat_folder)
-                        
-                        # Skip system files and index files
-                        if (not file.startswith("document_") and 
-                            file != "indexing.lock" and
-                            not file.startswith(".")):  # Skip hidden files
-                            all_files.append({
-                                "relative_path": relative_path,
-                                "full_path": full_path,
-                                "filename": file
-                            })
+                if os.path.exists(chat_folder):
+                    # Note: os.walk doesn't have an async equivalent in aiofiles
+                    # so we still use run_in_executor for directory traversal
+                    for root, dirs, files in os.walk(chat_folder):
+                        for file in files:
+                            full_path = os.path.join(root, file)
+                            # Get relative path from chat_folder
+                            relative_path = os.path.relpath(full_path, chat_folder)
+                            
+                            # Skip system files and index files
+                            if (not file.startswith("document_") and 
+                                file != "indexing.lock" and
+                                not file.startswith(".")):  # Skip hidden files
+                                all_files.append({
+                                    "relative_path": relative_path,
+                                    "full_path": full_path,
+                                    "filename": file
+                                })
                 return all_files
             
             file_info_list = await run_in_executor(find_all_files)
@@ -282,8 +299,9 @@ class DocumentRAG:
                     print(f"  - {file_info['relative_path']}")
             
             if not file_info_list:
-                if await run_in_executor(os.path.exists, lock_file):
-                    await run_in_executor(os.remove, lock_file)
+                # Ensure lock file is removed before returning
+                if await aiofiles.ospath.exists(lock_file):
+                    await aiofiles.os.remove(lock_file)
                 return {"message": "No documents found to index"}
             
             # Process documents
@@ -297,7 +315,7 @@ class DocumentRAG:
                     relative_path = file_info["relative_path"]
                     print(f"Loading document {relative_path}...")
                     
-                    # Use the async method for loading documents
+                    # Use the async method for loading documents - WAIT for completion
                     documents = await self._load_document(file_path)
                     
                     # Yield control back to the event loop
@@ -324,12 +342,13 @@ class DocumentRAG:
                 await asyncio.sleep(0)
             
             if not all_docs:
-                if await run_in_executor(os.path.exists, lock_file):
-                    await run_in_executor(os.remove, lock_file)
+                # Ensure lock file is removed before returning
+                if await aiofiles.ospath.exists(lock_file):
+                    await aiofiles.os.remove(lock_file)
                 return {"message": "No content could be extracted from documents", "failed_files": failed_files}
             
             print(f"Splitting {len(all_docs)} documents into chunks...")
-            # Split documents into chunks using run_in_executor
+            # Split documents into chunks using run_in_executor - WAIT for completion
             text_splitter = RecursiveCharacterTextSplitter(
                 chunk_size=1000,
                 chunk_overlap=200,
@@ -356,8 +375,7 @@ class DocumentRAG:
             ids = list(range(len(chunks)))
             
             print(f"Generating embeddings for {len(texts)} chunks...")
-            # Use the embed_documents function from llm_helpers, which now generates
-            # embeddings using text-embedding-3-large
+            # Use the embed_documents function - WAIT for completion
             embeddings_list = await embed_documents(texts)
             print(f"Generated {len(embeddings_list)} embeddings")
             
@@ -368,16 +386,16 @@ class DocumentRAG:
             dimension = len(embeddings_list[0])
             logger.info(f"Creating FAISS index with {dimension} dimensions")
             
-            # Convert to numpy array
+            # Convert to numpy array and create index - WAIT for completion
             embeddings_array = np.array(embeddings_list, dtype=np.float32)
-            
-            # Create optimized FAISS index
-            index = self._create_faiss_index(dimension, embeddings_array)
+            index = await run_in_executor(
+                lambda: self._create_faiss_index(dimension, embeddings_array)
+            )
             
             # Yield control back to the event loop
             await asyncio.sleep(0)
             
-            # Save index and document store using run_in_executor
+            # Save index and document store using run_in_executor - WAIT for completion
             print(f"Saving index to {index_file}...")
             await run_in_executor(
                 lambda: self._save_document_index(index_file, doc_store, ids, 
@@ -386,6 +404,13 @@ class DocumentRAG:
             
             print(f"Saving FAISS index to {faiss_index_file}...")
             await run_in_executor(faiss.write_index, index, faiss_index_file)
+            
+            # Verify that both files were actually saved
+            if not (await aiofiles.ospath.exists(index_file) and 
+                    await aiofiles.ospath.exists(faiss_index_file)):
+                raise Exception("Failed to save index files to disk")
+            
+            print(f"Index files successfully saved and verified")
             
             result = {
                 "message": "Documents indexed successfully",
@@ -397,28 +422,32 @@ class DocumentRAG:
             }
             print(f"Indexing completed: {result}")
             return result
+            
         except Exception as e:
             error_msg = f"Error indexing documents: {str(e)}"
             logger.error(error_msg)
             return {"error": error_msg}
         finally:
-            # Remove lock file
+            # ALWAYS remove lock file, wait for completion
             try:
-                if await run_in_executor(os.path.exists, lock_file):
-                    await run_in_executor(os.remove, lock_file)
+                if await aiofiles.ospath.exists(lock_file):
+                    await aiofiles.os.remove(lock_file)
                     print(f"Lock file {lock_file} removed")
             except Exception as e:
                 logger.error(f"Error removing lock file: {e}")
+            
+            # Final verification that everything is complete
+            print(f"Indexing process for chat {chat_id} fully completed")
     
-    def _create_lock_file(self, lock_file: str):
+    async def _create_lock_file_async(self, lock_file: str):
         """
-        Create a lock file
+        Create a lock file asynchronously
         
         Args:
             lock_file: Path to the lock file
         """
-        with open(lock_file, "w") as f:
-            f.write(f"Indexing started at {datetime.datetime.now().isoformat()}")
+        async with aiofiles.open(lock_file, "w") as f:
+            await f.write(f"Indexing started at {datetime.datetime.now().isoformat()}")
     
     def _save_document_index(self, index_file: str, doc_store: Dict, ids: List, 
                             indexed_files: List, failed_files: List, dimension: int = None):
@@ -466,6 +495,8 @@ class DocumentRAG:
         def find_all_files():
             all_files = []
             if os.path.exists(chat_folder):
+                # Note: os.walk doesn't have an async equivalent in aiofiles
+                # so we still use run_in_executor for directory traversal
                 for root, dirs, files in os.walk(chat_folder):
                     for file in files:
                         full_path = os.path.join(root, file)
@@ -488,9 +519,9 @@ class DocumentRAG:
         dimension = None
         
         # Only check for index if the RAG folder exists
-        if await run_in_executor(os.path.exists, rag_folder):
+        if await aiofiles.ospath.exists(rag_folder):
             index_file = os.path.join(rag_folder, "document_index.pkl")
-            if await run_in_executor(os.path.exists, index_file):
+            if await aiofiles.ospath.exists(index_file):
                 index_data = await run_in_executor(self._load_index_data, index_file)
                 indexed_files = index_data.get("indexed_files", [])
                 indexed_at = index_data.get("indexed_at")
@@ -540,7 +571,7 @@ class DocumentRAG:
         rag_folder = self._get_rag_storage_folder(chat_id)
         
         # Check if RAG folder exists first
-        if not await run_in_executor(os.path.exists, rag_folder):
+        if not await aiofiles.ospath.exists(rag_folder):
             logger.info(f"No RAG storage folder found for chat {chat_id}")
             return []
         
@@ -548,8 +579,8 @@ class DocumentRAG:
         faiss_index_file = os.path.join(rag_folder, "document_faiss.index")
         
         # Check if index exists
-        if not (await run_in_executor(os.path.exists, index_file) and 
-                await run_in_executor(os.path.exists, faiss_index_file)):
+        if not (await aiofiles.ospath.exists(index_file) and 
+                await aiofiles.ospath.exists(faiss_index_file)):
             return []
         
         # Load index data
@@ -599,16 +630,16 @@ class DocumentRAG:
             rag_folder = self._get_rag_storage_folder(str(chat_id))
             
             # Check if the folder exists before proceeding
-            if not await run_in_executor(os.path.exists, rag_folder):
+            if not await aiofiles.ospath.exists(rag_folder):
                 logger.info(f"No RAG storage folder found for chat {chat_id}")
                 return ""
                 
             index_file = os.path.join(rag_folder, "document_index.pkl")
             faiss_index_file = os.path.join(rag_folder, "document_faiss.index")
             
-            # Check if index exists using run_in_executor for non-blocking I/O
-            if (await run_in_executor(os.path.exists, index_file) and 
-                await run_in_executor(os.path.exists, faiss_index_file)):
+            # Check if index exists using aiofiles for non-blocking I/O
+            if (await aiofiles.ospath.exists(index_file) and 
+                await aiofiles.ospath.exists(faiss_index_file)):
                 
                 # Retrieve relevant documents
                 relevant_docs = await self.retrieve_relevant_documents(str(chat_id), query, top_k=top_k)
