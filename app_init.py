@@ -20,6 +20,7 @@ from pydantic import BaseModel
 from fastapi import FastAPI, Depends, HTTPException
 from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi import Header, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
@@ -31,10 +32,15 @@ from database import SessionLocal, Chat, Message, User, get_engine_status
 # Import modules containing the application endpoints
 from db_manager import cleanup_stale_db_sessions
 
-# Create FastAPI app
-app = FastAPI(title="Code & Document Analysis Chat System", 
-              description="A chat system with sophisticated code analysis, document retrieval, and web search capabilities",
-              version="1.0.0")
+# Create FastAPI app with proxy headers configuration
+app = FastAPI(
+    title="Code & Document Analysis Chat System", 
+    description="A chat system with sophisticated code analysis, document retrieval, and web search capabilities",
+    version="1.0.0",
+    # Configure for reverse proxy
+    root_path="",
+    servers=[{"url": "/"}]
+)
 
 # Configure CORS to ensure streaming works properly
 app.add_middleware(
@@ -44,6 +50,23 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Add trusted host middleware for reverse proxy
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=["*"])
+
+# Middleware to handle proxy headers
+@app.middleware("http")
+async def proxy_headers_middleware(request, call_next):
+    # Handle X-Forwarded-Proto header for HTTPS detection
+    if "x-forwarded-proto" in request.headers:
+        request.scope["scheme"] = request.headers["x-forwarded-proto"]
+    
+    # Handle X-Forwarded-Host header
+    if "x-forwarded-host" in request.headers:
+        request.scope["server"] = (request.headers["x-forwarded-host"], None)
+    
+    response = await call_next(request)
+    return response
 
 # Track background tasks by chat_id
 class BackgroundTaskManager:
