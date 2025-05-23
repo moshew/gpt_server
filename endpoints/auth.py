@@ -12,15 +12,12 @@ import datetime
 import json
 import base64
 import urllib.parse
-from fastapi import Depends, HTTPException, Response, Request, Cookie
-from fastapi.responses import RedirectResponse, JSONResponse
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.future import select
+from fastapi import Depends, Request, Cookie
+from fastapi.responses import RedirectResponse
 from typing import Optional
 
 from app_init import app
-from db_manager import get_db
-from database import User
+from database import SessionLocal
 from auth import get_authorization_url, exchange_code_for_token, get_or_create_user, create_access_token, get_current_user
 
 # Login endpoint to initiate Microsoft authentication
@@ -70,7 +67,6 @@ async def auth_callback(
     state: Optional[str] = None,
     error: Optional[str] = None,
     error_description: Optional[str] = None,
-    db: AsyncSession = Depends(get_db),
     auth_state: Optional[str] = Cookie(None)
 ):
     """
@@ -82,7 +78,6 @@ async def auth_callback(
         state: State parameter (from OAuth provider)
         error: Error code if authentication failed
         error_description: Error description if authentication failed
-        db: Database session
         auth_state: Cookie containing our encoded state data
         
     Returns:
@@ -116,7 +111,7 @@ async def auth_callback(
             return RedirectResponse(url="/login?error=email_missing")
         
         # Create or get user
-        user = await get_or_create_user(email, db)
+        user = await get_or_create_user(email)
         
         # Create application JWT token
         token_data = {

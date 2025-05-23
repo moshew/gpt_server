@@ -216,7 +216,7 @@ async def get_current_user(request: Request, db: AsyncSession = Depends(get_db))
     return await get_user_from_token(token, db)
 
 
-async def get_or_create_user(email: str, db: AsyncSession) -> User:
+async def get_or_create_user(email: str) -> User:
     """
     Get existing user or create a new one based on Microsoft account
     
@@ -228,21 +228,22 @@ async def get_or_create_user(email: str, db: AsyncSession) -> User:
     Returns:
         User object
     """
-    # Check if user already exists by Microsoft email
-    result = await db.execute(select(User).filter(User.username == email))
-    user = result.scalars().first()
-    
-    if user:
-        return user
-    
-    # Create new user
-    new_user = User(
-        username=email
-    )
-    
-    db.add(new_user)
-    await db.commit()
-    await db.refresh(new_user)
+    async with SessionLocal() as db:
+        # Check if user already exists by Microsoft email
+        result = await db.execute(select(User).filter(User.username == email))
+        user = result.scalars().first()
+        
+        if user:
+            return user
+        
+        # Create new user
+        new_user = User(
+            username=email
+        )
+        
+        db.add(new_user)
+        await db.commit()
+        await db.refresh(new_user)
     
     return new_user
 

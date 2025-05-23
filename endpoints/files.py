@@ -16,17 +16,17 @@ import shutil
 from typing import Dict, List, Any, Optional, Tuple, Set
 import mimetypes
 from datetime import datetime
+import aiofiles.os
 
 from pydantic import BaseModel
 from fastapi import Depends, File, UploadFile, HTTPException, BackgroundTasks, Form
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from database import User, File as DBFile
+from database import User, File as DBFile, SessionLocal
 
 from app_init import app
 from auth import verify_chat_owner
-from db_manager import get_db, get_new_db_session, safe_close_session
 from rag_documents import get_document_rag
 from utils.async_helpers import run_in_executor
 
@@ -38,7 +38,6 @@ async def upload_files(
     chat_id: int,
     files: List[UploadFile] = File(...),
     file_type: str = Form("doc"),  # "doc" or "code"
-    db: AsyncSession = Depends(get_db),
     _: User = Depends(verify_chat_owner())
 ):
     """
@@ -48,105 +47,104 @@ async def upload_files(
         chat_id: Chat ID
         files: List of uploaded files
         file_type: Type of files - "doc" or "code"
-        db: Database session
         
     Returns:
         Upload result information including a list of all files in the chat
     """
-    print(f"file_type: {file_type}")
-    try:
-        # Get handlers
-        doc_rag = get_document_rag(str(chat_id))
-        
-        # Determine the destination folder based on file_type
-        if file_type == "doc":
-            destination_folder = os.path.join("chats", f"chat_{chat_id}")
-        else:  # file_type == "code"
-            destination_folder = os.path.join("code", f"chat_{chat_id}")
-
-        # Ensure chat folder exists
-        os.makedirs(destination_folder, exist_ok=True)
-
-        # Track upload results
-        results = {
-            "uploaded": [], 
-            "extracted": [],
-            "errors": []
-        }
-        
-        # Keep track of all archive processing tasks
-        archive_tasks = []
-        
-        # Process files sequentially to avoid race conditions in file saving
-        for file in files:
-            try:
-                # Read file content
-                content = await file.read()
-                
-                # Save the file to the chat folder
-                file_path = os.path.join(destination_folder, file.filename)
-                
-                # Save the file to disk using run_in_executor
-                await run_in_executor(lambda: open(file_path, "wb").write(content))
-
-                # Check for archive files first by extension
-                file_ext = os.path.splitext(file.filename)[1].lower()
-                archive_extensions = ['.zip', '.tar', '.tar.gz', '.tgz', '.gz', '.rar']
-                if file_ext in archive_extensions:
-                    # Create an archive processing task but don't start it yet
-                    task = process_archive(
-                        chat_id,
-                        file_path, 
-                        file.filename, 
-                        destination_folder, 
-                        results,
-                        file_type
-                    )
-                    # Add to our list of tasks to wait for
-                    archive_tasks.append(task)
-                else:
-                    # For non-archive files (code or documents), add to database with the file_type
-                    db_file = DBFile(
-                        chat_id=chat_id,
-                        file_type=file_type,
-                        file_name=file.filename
-                    )
-                    db.add(db_file)
-                    
-                    # Update results
-                    results["uploaded"].append(file.filename)
-            except Exception as e:
-                results["errors"].append(f"Error processing {file.filename}: {str(e)}")
-                continue
-        
-        # Commit database changes for non-archive files
-        await db.commit()
-        
-        # Now start all archive processing tasks in parallel
-        if archive_tasks:
-            # Wait for all archive extraction tasks to complete
-            await asyncio.gather(*archive_tasks)
+    async with SessionLocal() as db:
+        try:
+            # Get handlers
+            doc_rag = get_document_rag(str(chat_id))
             
-        # Query the database to get ALL files associated with this chat
-        result = await db.execute(select(DBFile).filter(DBFile.chat_id == chat_id))
-        all_files = result.scalars().all()
-        
-        # Split files by type
-        doc_files = [{"id": file.id, "file_name": file.file_name} for file in all_files if file.file_type == "doc"]
-        code_files = [{"id": file.id, "file_name": file.file_name} for file in all_files if file.file_type == "code"]
-        
-        return {
-            "message": f"Uploaded {len(results['uploaded'])} file(s) and extracted {len(results['extracted'])} file(s)",
-            "results": results,
-            "doc_files": doc_files,
-            "code_files": code_files
-        }
-    except Exception as e:
-        await db.rollback()
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error uploading files: {str(e)}"
-        )
+            # Determine the destination folder based on file_type
+            if file_type == "doc":
+                destination_folder = os.path.join("chats", f"chat_{chat_id}")
+            else:  # file_type == "code"
+                destination_folder = os.path.join("code", f"chat_{chat_id}")
+
+            # Ensure chat folder exists
+            os.makedirs(destination_folder, exist_ok=True)
+
+            # Track upload results
+            results = {
+                "uploaded": [], 
+                "extracted": [],
+                "errors": []
+            }
+            
+            # Keep track of all archive processing tasks
+            archive_tasks = []
+            
+            # Process files sequentially to avoid race conditions in file saving
+            for file in files:
+                try:
+                    # Read file content
+                    content = await file.read()
+                    
+                    # Save the file to the chat folder
+                    file_path = os.path.join(destination_folder, file.filename)
+                    
+                    # Save the file to disk using run_in_executor
+                    await run_in_executor(lambda: open(file_path, "wb").write(content))
+
+                    # Check for archive files first by extension
+                    file_ext = os.path.splitext(file.filename)[1].lower()
+                    archive_extensions = ['.zip', '.tar', '.tar.gz', '.tgz', '.gz', '.rar']
+                    if file_ext in archive_extensions:
+                        # Create an archive processing task but don't start it yet
+                        task = process_archive(
+                            chat_id,
+                            file_path, 
+                            file.filename, 
+                            destination_folder, 
+                            results,
+                            file_type
+                        )
+                        # Add to our list of tasks to wait for
+                        archive_tasks.append(task)
+                    else:
+                        # For non-archive files (code or documents), add to database with the file_type
+                        db_file = DBFile(
+                            chat_id=chat_id,
+                            file_type=file_type,
+                            file_name=file.filename
+                        )
+                        db.add(db_file)
+                        
+                        # Update results
+                        results["uploaded"].append(file.filename)
+                except Exception as e:
+                    results["errors"].append(f"Error processing {file.filename}: {str(e)}")
+                    continue
+            
+            # Commit database changes for non-archive files
+            await db.commit()
+            
+            # Now start all archive processing tasks in parallel
+            if archive_tasks:
+                # Wait for all archive extraction tasks to complete
+                await asyncio.gather(*archive_tasks)
+                
+            # Query the database to get ALL files associated with this chat
+            result = await db.execute(select(DBFile).filter(DBFile.chat_id == chat_id))
+            all_files = result.scalars().all()
+            
+            # Split files by type
+            doc_files = [{"id": file.id, "file_name": file.file_name} for file in all_files if file.file_type == "doc"]
+            code_files = [{"id": file.id, "file_name": file.file_name} for file in all_files if file.file_type == "code"]
+            
+            return {
+                "message": f"Uploaded {len(results['uploaded'])} file(s) and extracted {len(results['extracted'])} file(s)",
+                "results": results,
+                "doc_files": doc_files,
+                "code_files": code_files
+            }
+        except Exception as e:
+            await db.rollback()
+            raise HTTPException(
+                status_code=500,
+                detail=f"Error uploading files: {str(e)}"
+            )
 
 async def process_archive(
     chat_id: int,
@@ -175,50 +173,57 @@ async def process_archive(
             
             if extract_result["success"]:
                 # Create a new session for this background task
-                async_session = await get_new_db_session()
-                
-                try:
-                    # Process each extracted file in batches to avoid overwhelming the DB
-                    extracted_files = extract_result["extracted_files"]
-                    batch_size = 100  # Process files in batches of 100
-                    
-                    for i in range(0, len(extracted_files), batch_size):
-                        # Get the current batch of files
-                        batch = extracted_files[i:i+batch_size]
+                async with SessionLocal() as db:
+                    try:
+                        # Process each extracted file in batches to avoid overwhelming the DB
+                        extracted_files = extract_result["extracted_files"]
+                        batch_size = 50  # Reduced batch size for better performance
                         
-                        for extracted_file in batch:
-                            file_path = os.path.join(destination_folder, extracted_file)
+                        for i in range(0, len(extracted_files), batch_size):
+                            # Get the current batch of files
+                            batch = extracted_files[i:i+batch_size]
+                            batch_results = []
                             
-                            # Skip directories or non-existent files
-                            if not await run_in_executor(os.path.isfile, file_path):
-                                continue
+                            # Process batch files asynchronously
+                            for extracted_file in batch:
+                                file_path = os.path.join(destination_folder, extracted_file)
+                                
+                                # Use async file system checks
+                                file_exists = await aiofiles.os.path.isfile(file_path)
+                                if not file_exists:
+                                    continue
+                                
+                                try:
+                                    # Add file to database with file_type
+                                    db_file = DBFile(
+                                        chat_id=chat_id,
+                                        file_type=file_type,
+                                        file_name=extracted_file
+                                    )
+                                    async_sessdbion.add(db_file)
+                                    batch_results.append(extracted_file)
+                                    
+                                except Exception as e:
+                                    results["errors"].append(f"Error processing extracted file {extracted_file}: {str(e)}")
                             
+                            # Commit each batch to avoid large transactions
                             try:
-                                # Add file to database with file_type
-                                db_file = DBFile(
-                                    chat_id=chat_id,
-                                    file_type=file_type,
-                                    file_name=extracted_file
-                                )
-                                async_session.add(db_file)
-                                
-                                # Track in results
-                                results["extracted"].append(extracted_file)
-                                
+                                await db.commit()
+                                # Only add to results after successful commit
+                                results["extracted"].extend(batch_results)
                             except Exception as e:
-                                results["errors"].append(f"Error processing extracted file {extracted_file}: {str(e)}")
-                        
-                        # Commit each batch to avoid large transactions
-                        await async_session.commit()
-                
-                except Exception as e:
-                    await async_session.rollback()
-                    results["errors"].append(f"Database error during extraction: {str(e)}")
-                finally:
-                    await safe_close_session(async_session)
-                
-                # Delete the original archive file after successful extraction
-                await run_in_executor(os.remove, archive_path)
+                                await db.rollback()
+                                results["errors"].append(f"Database commit error for batch: {str(e)}")
+                                break
+                            
+                            # Allow other coroutines to run between batches
+                            await asyncio.sleep(0.01)
+                    
+                    except Exception as e:
+                        await db.rollback()
+                        results["errors"].append(f"Database error during extraction: {str(e)}")
+                # Async file deletion
+                await aiofiles.os.remove(archive_path)
             else:
                 results["errors"].append(f"Failed to extract {archive_filename}: {extract_result.get('error', 'Unknown error')}")
         except Exception as e:

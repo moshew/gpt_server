@@ -253,16 +253,35 @@ class DocumentRAG:
             # Continue anyway
         
         try:
-            # List all document files in the folder
-            all_files = await run_in_executor(os.listdir, chat_folder)
-            files = [f for f in all_files 
-                    if await run_in_executor(os.path.isfile, os.path.join(chat_folder, f)) and 
-                    not f.startswith("document_") and
-                    not f == "indexing.lock"]
+            # List all document files in the folder recursively
+            def find_all_files():
+                all_files = []
+                for root, dirs, files in os.walk(chat_folder):
+                    for file in files:
+                        full_path = os.path.join(root, file)
+                        # Get relative path from chat_folder
+                        relative_path = os.path.relpath(full_path, chat_folder)
+                        
+                        # Skip system files and index files
+                        if (not file.startswith("document_") and 
+                            file != "indexing.lock" and
+                            not file.startswith(".")):  # Skip hidden files
+                            all_files.append({
+                                "relative_path": relative_path,
+                                "full_path": full_path,
+                                "filename": file
+                            })
+                return all_files
             
-            print(f"Found {len(files)} files to index in chat {chat_id}: {files}")
+            file_info_list = await run_in_executor(find_all_files)
             
-            if not files:
+            print(f"Found {len(file_info_list)} files to index in chat {chat_id} (including subdirectories)")
+            if file_info_list:
+                print("Files found:")
+                for file_info in file_info_list:
+                    print(f"  - {file_info['relative_path']}")
+            
+            if not file_info_list:
                 if await run_in_executor(os.path.exists, lock_file):
                     await run_in_executor(os.remove, lock_file)
                 return {"message": "No documents found to index"}
@@ -272,10 +291,11 @@ class DocumentRAG:
             indexed_files = []
             failed_files = []
             
-            for file_name in files:
+            for file_info in file_info_list:
                 try:
-                    file_path = os.path.join(chat_folder, file_name)
-                    print(f"Loading document {file_path}...")
+                    file_path = file_info["full_path"]
+                    relative_path = file_info["relative_path"]
+                    print(f"Loading document {relative_path}...")
                     
                     # Use the async method for loading documents
                     documents = await self._load_document(file_path)
@@ -284,19 +304,20 @@ class DocumentRAG:
                     await asyncio.sleep(0)
                     
                     if documents:
-                        print(f"Successfully loaded {len(documents)} documents from {file_name}")
-                        # Add file info to document metadata
+                        print(f"Successfully loaded {len(documents)} documents from {relative_path}")
+                        # Add file info to document metadata including subdirectory path
                         for doc in documents:
-                            doc.metadata["file_name"] = file_name
+                            doc.metadata["file_name"] = relative_path  # Use relative path
+                            doc.metadata["original_filename"] = file_info["filename"]  # Original filename
                             
                         all_docs.extend(documents)
-                        indexed_files.append(file_name)
+                        indexed_files.append(relative_path)
                     else:
-                        print(f"No documents loaded from {file_name}")
-                        failed_files.append(file_name)
+                        print(f"No documents loaded from {relative_path}")
+                        failed_files.append(relative_path)
                 except Exception as e:
-                    logger.error(f"Error loading document {file_name}: {e}")
-                    failed_files.append(file_name)
+                    logger.error(f"Error loading document {file_info['relative_path']}: {e}")
+                    failed_files.append(file_info["relative_path"])
                     continue
                 
                 # Yield control back to the event loop after each file
@@ -430,7 +451,7 @@ class DocumentRAG:
     
     async def list_documents(self, chat_id: str) -> Dict:
         """
-        List all documents for a specific chat
+        List all documents for a specific chat, including subdirectories
         
         Args:
             chat_id: Chat identifier
@@ -441,12 +462,24 @@ class DocumentRAG:
         chat_folder = self._get_chat_folder(chat_id)
         rag_folder = self._get_rag_storage_folder(chat_id)
         
-        # List all document files in the folder using run_in_executor
-        files = await run_in_executor(
-            lambda: [f for f in os.listdir(chat_folder) 
-                    if os.path.isfile(os.path.join(chat_folder, f)) and 
-                    not f.startswith("document_")]
-        )
+        # List all document files in the folder recursively using run_in_executor
+        def find_all_files():
+            all_files = []
+            if os.path.exists(chat_folder):
+                for root, dirs, files in os.walk(chat_folder):
+                    for file in files:
+                        full_path = os.path.join(root, file)
+                        # Get relative path from chat_folder
+                        relative_path = os.path.relpath(full_path, chat_folder)
+                        
+                        # Skip system files and index files
+                        if (not file.startswith("document_") and 
+                            file != "indexing.lock" and
+                            not file.startswith(".")):  # Skip hidden files
+                            all_files.append(relative_path)
+            return all_files
+        
+        files = await run_in_executor(find_all_files)
         
         # Check if RAG folder exists and index exists
         indexed_files = []
