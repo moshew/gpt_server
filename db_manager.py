@@ -13,8 +13,7 @@ import datetime
 import logging
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from database import SessionLocal, Chat, Message, User, get_engine_status
-from fastapi import HTTPException
+from database import SessionLocal, Message, get_engine_status
 from langchain.memory import ConversationBufferWindowMemory
 
 # Configure logging
@@ -23,62 +22,6 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger("db_manager")
-
-async def get_db():
-    """
-    Async dependency to provide database session and handle proper cleanup
-    
-    This implementation ensures the database session is properly managed even
-    in concurrent scenarios or when used in background tasks.
-    
-    Yields:
-        AsyncSession: Database session
-    """
-    db = SessionLocal()
-    try:
-        yield db
-    except Exception as e:
-        # Log the exception but don't close the session here - might be used by others
-        logger.error(f"Exception in get_db: {e}")
-        # Only rollback, don't close
-        await db.rollback()
-        raise
-    finally:
-        print("closing db")
-        # Safe close that checks session state first
-        if db.is_active:
-            try:
-                await db.close()
-            except Exception as e:
-                logger.error(f"Error closing DB session: {e}")
-
-# Create a new independent database session
-async def get_new_db_session():
-    """
-    Create a new independent database session
-    
-    This is useful for background tasks or operations that need
-    their own dedicated session.
-    
-    Returns:
-        AsyncSession: New database session
-    """
-    return SessionLocal()
-
-# Helper function to safely close a session
-async def safe_close_session(db, timeout=5):
-    """Close session with timeout guarantee"""
-    if db is not None:
-        try:
-            if db.is_active:
-                # הוספת timeout לסגירת החיבור
-                close_task = asyncio.create_task(db.close())
-                try:
-                    await asyncio.wait_for(close_task, timeout=timeout)
-                except asyncio.TimeoutError:
-                    logger.warning(f"Session close timeout after {timeout}s")
-        except Exception as e:
-            logger.error(f"Error closing session: {e}")
 
 async def load_memory(db: AsyncSession, chat_id: int):
     """

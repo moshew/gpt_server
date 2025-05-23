@@ -11,17 +11,10 @@ This module:
 
 import os
 import asyncio
-import json
-import shutil
-from typing import Dict, List, Any, Optional, Tuple, Set
-import mimetypes
-from datetime import datetime
+from typing import Dict, List, Any, Set
 import aiofiles.os
 
-from pydantic import BaseModel
-from fastapi import Depends, File, UploadFile, HTTPException, BackgroundTasks, Form
-from fastapi.responses import JSONResponse
-from sqlalchemy.ext.asyncio import AsyncSession
+from fastapi import Depends, File, UploadFile, HTTPException, Form
 from sqlalchemy.future import select
 from database import User, File as DBFile, SessionLocal
 

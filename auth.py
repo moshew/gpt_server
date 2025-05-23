@@ -20,7 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from jose import jwt, JWTError
 
-from database import User, Chat
+from database import User, Chat, SessionLocal
 from db_manager import get_db
 from config import MS_CLIENT_ID, MS_CLIENT_SECRET, MS_TENANT_ID, MS_REDIRECT_URI, SECRET_KEY
 from functools import wraps
@@ -196,7 +196,7 @@ async def get_user_from_token(token: str, db: AsyncSession) -> User:
     
     return user
 
-async def get_current_user(request: Request, db: AsyncSession = Depends(get_db)) -> User:
+async def get_current_user(request: Request, db: AsyncSession) -> User:
     """
     Get current user from session or token
     
@@ -289,12 +289,12 @@ async def verify_chat_ownership(chat_id: int, user_id: int, db: AsyncSession) ->
 
 
 #chat ownership verification
-def verify_chat_owner():
+def verify_chat_owner(request: Request):
     async def dependency(
         chat_id: int,
-        user: User = Depends(get_current_user),
-        db: AsyncSession = Depends(get_db)
     ):
+        async with SessionLocal() as db:
+            user = await get_current_user(request, db)
         await verify_chat_ownership(chat_id, user.id, db)
         return user  # Return the user for convenience
         

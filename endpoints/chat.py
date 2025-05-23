@@ -13,8 +13,7 @@ import datetime
 from typing import Optional
 from pydantic import BaseModel
 
-from fastapi import Depends, HTTPException, BackgroundTasks
-from sqlalchemy.ext.asyncio import AsyncSession
+from fastapi import  HTTPException, Request
 from sqlalchemy.future import select
 from database import Chat, Message, File
 
@@ -60,7 +59,7 @@ async def generate_chat_title(message: str) -> str:
 # Get user chats endpoint
 @app.get("/chats/")
 async def get_user_chats(
-    user = Depends(get_current_user)
+    request: Request,
 ):
     """
     Get the 10 most recent chats for a user
@@ -74,6 +73,7 @@ async def get_user_chats(
     try:
         # Query with limit to get only the 10 most recent chats
         async with SessionLocal() as db:
+            user = await get_current_user(request, db)
             result = await db.execute(
                 select(Chat)
                 .filter(Chat.user_id == user.id)
@@ -100,7 +100,7 @@ async def get_user_chats(
 @app.get("/chat_data/{chat_id}")
 async def get_chat_data(
     chat_id: int,
-    user = Depends(get_current_user)
+    request: Request,
 ):
     """
     Get all messages and files for a specific chat, separating document and code files,
@@ -115,7 +115,8 @@ async def get_chat_data(
     """
     try:
         async with SessionLocal() as db:
-        # Check chat ownership
+            # Check chat ownership
+            user = await get_current_user(request, db)
             result = await db.execute(
                 select(Chat).filter(Chat.id == chat_id, Chat.user_id == user.id)
             )
@@ -187,7 +188,7 @@ async def get_chat_data(
 # Create new chat with default name endpoint
 @app.post("/new_chat/")
 async def new_chat(
-    user = Depends(get_current_user)
+    request: Request,
 ):
     """
     Create a new chat with a default name (fast creation without waiting for name generation)
@@ -204,6 +205,7 @@ async def new_chat(
             default_chat_name = f"New Chat"
         
             # Create new chat in database
+            user = await get_current_user(request, db)
             chat = Chat(user_id=user.id, chat_name=default_chat_name)
             db.add(chat)
             await db.commit()
@@ -222,8 +224,8 @@ async def new_chat(
 # Update chat name based on message
 @app.post("/update_chat_name/")
 async def update_chat_name(
-    chat_name_request: ChatNameRequest, 
-    user = Depends(get_current_user)
+    chat_name_request: ChatNameRequest,
+    request: Request,
 ):
     """
     Update chat name based on a provided message
@@ -239,7 +241,8 @@ async def update_chat_name(
         try:
             # Get the chat ID from the request
             chat_id = chat_name_request.chat_id
-        
+
+            user = await get_current_user(request, db)
             result = await db.execute(
                 select(Chat).filter(Chat.id == chat_id, Chat.user_id == user.id)
             )
@@ -275,7 +278,7 @@ async def update_chat_name(
 @app.post("/new_named_chat/")
 async def new_named_chat(
     chat_request: ChatRequest, 
-    user = Depends(get_current_user)
+    request: Request,
 ):
     """
     Create a new chat with the first question, generating a chat name synchronously
@@ -293,6 +296,7 @@ async def new_named_chat(
             temp_chat_name = f"Chat {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}"
             
             # Create new chat in database
+            user = await get_current_user(request, db)
             chat = Chat(user_id=user.id, chat_name=temp_chat_name)
             db.add(chat)
             await db.commit()

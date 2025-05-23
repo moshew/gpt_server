@@ -19,18 +19,15 @@ import json
 import logging
 import base64
 
-from typing import Optional, Dict, Any, List, Union, AsyncGenerator
+from typing import Optional, List,
 from fastapi import Depends, BackgroundTasks, HTTPException, Query, File, UploadFile, Form, Request
 from fastapi.responses import StreamingResponse, JSONResponse
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.future import select
-from database import User, Chat, Message
+from database import User
 from langchain.schema import HumanMessage, SystemMessage
-from contextlib import asynccontextmanager
 
 from app_init import app
 from auth import get_user_from_token, verify_chat_owner, verify_chat_ownership
-from db_manager import get_db, get_new_db_session, safe_close_session, load_memory, save_message
+from db_manager import load_memory, save_message
 from database import SessionLocal
 from utils import process_langchain_messages
 from utils.sse import stream_text_as_sse, stream_generator_as_sse

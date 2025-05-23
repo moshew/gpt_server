@@ -12,7 +12,7 @@ import datetime
 import json
 import base64
 import urllib.parse
-from fastapi import Depends, Request, Cookie
+from fastapi import Request, Cookie
 from fastapi.responses import RedirectResponse
 from typing import Optional
 
@@ -137,11 +137,13 @@ async def auth_callback(
 
 # Get user information endpoint
 @app.get("/user/")
-async def get_user(user = Depends(get_current_user)):
+async def get_user(request: Request):
     """
     Get user information
        
     Returns:
         User information
     """
+    async with SessionLocal() as db:
+        user = await get_current_user(request, db)
     return {"username": user.username, "id": user.id}
