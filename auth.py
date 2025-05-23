@@ -14,14 +14,12 @@ from datetime import datetime, timedelta
 from urllib.parse import urlencode
 
 import httpx
-from fastapi import Depends, HTTPException, Request
-from fastapi.responses import RedirectResponse
+from fastapi import HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from jose import jwt, JWTError
 
 from database import User, Chat, SessionLocal
-from db_manager import get_db
 from config import MS_CLIENT_ID, MS_CLIENT_SECRET, MS_TENANT_ID, MS_REDIRECT_URI, SECRET_KEY
 from functools import wraps
 
