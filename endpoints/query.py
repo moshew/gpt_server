@@ -246,16 +246,10 @@ async def start_query_session(
         chat_id: Chat identifier
         query: User's question
         images: Optional list of image files to include with the query
-        db: Database session
         
     Returns:
         Session ID to use with query_chat
     """
-    async with SessionLocal() as db:
-        user = await get_user_from_token(token, db)
-        await verify_chat_ownership(chat_id, user.id, db)
-
-    
     session_id = str(uuid.uuid4())
     session_data = {
         "chat_id": chat_id,
