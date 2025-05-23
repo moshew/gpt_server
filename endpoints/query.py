@@ -19,7 +19,7 @@ import json
 import logging
 import base64
 
-from typing import Optional, List,
+from typing import Optional, List
 from fastapi import Depends, BackgroundTasks, HTTPException, Query, File, UploadFile, Form, Request
 from fastapi.responses import StreamingResponse, JSONResponse
 from database import User
