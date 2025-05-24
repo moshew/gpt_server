@@ -1,39 +1,84 @@
 # Deployment Guide
 
-This directory contains all the necessary files for deploying the GPT Server application.
+This directory contains all the files needed to deploy the GPT Server application using Docker.
 
 ## Files Overview
 
-- **`docker-compose.yml`** - Main deployment configuration
-- **`Dockerfile`** - Application container definition  
-- **`.dockerignore`** - Files to exclude from Docker context
-- **`requirements.txt`** - Python dependencies
-- **`env.sample`** - Environment variables template
-- **`docker-instructions.md`** - Detailed deployment instructions
-- **`nginx/`** - Nginx reverse proxy configuration
-- **`init-db/`** - Database initialization scripts
+- `Dockerfile` - Production Docker image with Gunicorn + Uvicorn workers
+- `Dockerfile.dev` - Development Docker image with direct Uvicorn (for SSE testing)
+- `docker-compose.yml` - Production deployment with Nginx reverse proxy
+- `docker-compose.dev.yml` - Development deployment without Nginx (for SSE debugging)
+- `requirements.txt` - Python dependencies
+- `env.sample` - Environment variables template
+- `nginx/` - Nginx configuration files
+- `init-db/` - Database initialization scripts
 
-## Quick Deployment
+## Quick Start
 
-1. **Copy environment file**:
-   ```bash
-   cp env.sample ../.env
-   ```
+### Production Deployment
 
-2. **Edit configuration**:
-   ```bash
-   nano ../.env  # Configure your API keys and database settings
-   ```
+```bash
+# Copy environment template
+cp env.sample ../.env
 
-3. **Deploy with Docker Compose**:
-   ```bash
-   docker-compose up -d
-   ```
+# Edit .env with your configuration
+nano ../.env
 
-4. **Check status**:
-   ```bash
-   docker-compose ps
-   ```
+# Run production deployment
+docker-compose up -d
+```
+
+### Development/SSE Testing
+
+If you're experiencing SSE streaming issues, use the development setup without Nginx:
+
+```bash
+# Run development deployment (direct uvicorn, no nginx)
+docker-compose -f docker-compose.dev.yml up -d
+```
+
+This setup:
+- Uses direct Uvicorn instead of Gunicorn
+- Bypasses Nginx reverse proxy
+- Helps identify if buffering issues are caused by Nginx or Gunicorn
+
+## SSE Streaming Fixes
+
+The following optimizations have been implemented for proper SSE streaming in Docker:
+
+### Nginx Configuration (`nginx/nginx.conf`)
+- `proxy_buffering off` - Disables response buffering
+- `proxy_cache off` - Disables caching
+- `proxy_request_buffering off` - Disables request buffering
+- `gzip off` - Disables compression for immediate delivery
+
+### Gunicorn Configuration (`Dockerfile`)
+- Increased timeout settings for long-running requests
+- Optimized worker configuration for streaming
+
+### Application Headers
+- `Cache-Control: no-cache` - Prevents client caching
+- `Connection: keep-alive` - Maintains persistent connection
+- `X-Accel-Buffering: no` - Explicitly disables Nginx buffering
+
+## Troubleshooting SSE Issues
+
+1. **Test without Docker first** - Ensure SSE works locally
+2. **Use development setup** - Try `docker-compose.dev.yml` to bypass Nginx
+3. **Check browser console** - Look for EventSource connection errors
+4. **Monitor container logs** - Watch for buffering or timeout issues
+
+```bash
+# View application logs
+docker-compose logs -f app
+
+# View nginx logs
+docker-compose logs -f nginx
+```
+
+## Environment Variables
+
+Copy `env.sample` to `../.env` and configure:
 
 ## Services
 

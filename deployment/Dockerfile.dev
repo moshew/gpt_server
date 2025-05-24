@@ -18,9 +18,9 @@ COPY . .
 # Set Python path to include src directory
 ENV PYTHONPATH="/app/src:/app"
 
-# Set environment variables
+# Set environment variables for no buffering
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONIOENCODING=utf-8
 
-# Command to run the application using Gunicorn with Uvicorn workers optimized for SSE
-CMD ["gunicorn", "main:app", "--workers", "2", "--worker-class", "uvicorn.workers.UvicornWorker", "--bind", "0.0.0.0:8000", "--timeout", "300", "--keep-alive", "2", "--max-requests", "1000", "--max-requests-jitter", "50"]
+# Command to run the application using uvicorn directly (for development/testing SSE)
+CMD ["python", "main.py"] 

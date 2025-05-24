@@ -549,6 +549,11 @@ async def query_chat(
     return StreamingResponse(
         stream_response(), 
         media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"  # Disable nginx buffering
+        },
         background=BackgroundTasks()
     )
 
@@ -637,6 +642,11 @@ async def query_code(
     return StreamingResponse(
         stream_response(), 
         media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"  # Disable nginx buffering
+        },
         background=BackgroundTasks()
     )
 

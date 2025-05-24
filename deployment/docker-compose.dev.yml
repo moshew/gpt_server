@@ -1,0 +1,40 @@
+services:
+  app:
+    build:
+      context: ..
+      dockerfile: deployment/Dockerfile.dev
+    ports:
+      - "8000:8000"
+    env_file:
+      - ../.env
+    volumes:
+      - ../data:/app/data
+    restart: unless-stopped
+    command: ["python", "main.py"]  # Direct uvicorn without gunicorn
+
+  postgres:
+    image: postgres:14
+    environment:
+      - POSTGRES_PASSWORD=Aa123456
+      - POSTGRES_USER=gptadmin
+      - POSTGRES_DB=gpt
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init-db:/docker-entrypoint-initdb.d/
+    restart: unless-stopped
+
+  pgadmin:
+    image: dpage/pgadmin4
+    environment:
+      - PGADMIN_DEFAULT_EMAIL=admin@gpt.com
+      - PGADMIN_DEFAULT_PASSWORD=Aa123456
+    ports:
+      - "5050:80"
+    depends_on:
+      - postgres
+    restart: unless-stopped
+
+volumes:
+  postgres_data: 
