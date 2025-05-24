@@ -16,9 +16,9 @@ from fastapi import Request, Cookie
 from fastapi.responses import RedirectResponse
 from typing import Optional
 
-from app_init import app
-from database import SessionLocal
-from auth import get_authorization_url, exchange_code_for_token, get_or_create_user, create_access_token, get_current_user
+from ..app_init import app
+from ..database import SessionLocal
+from ..auth import get_authorization_url, exchange_code_for_token, get_or_create_user, create_access_token, get_current_user
 
 # Login endpoint to initiate Microsoft authentication
 @app.get("/auth/microsoft/login")

@@ -16,12 +16,12 @@ import aiofiles.os
 
 from fastapi import Depends, File, UploadFile, HTTPException, Form
 from sqlalchemy.future import select
-from database import User, File as DBFile, SessionLocal
+from ..database import User, File as DBFile, SessionLocal
 
-from app_init import app
-from auth import verify_chat_owner
-from rag_documents import get_document_rag
-from utils.async_helpers import run_in_executor
+from ..app_init import app
+from ..auth import verify_chat_owner
+from ..rag_documents import get_document_rag
+from ..utils.async_helpers import run_in_executor
 
 # Semaphore to limit concurrent extraction processes
 extraction_semaphore = asyncio.Semaphore(4)
@@ -51,9 +51,9 @@ async def upload_files(
             
             # Determine the destination folder based on file_type
             if file_type == "doc":
-                destination_folder = os.path.join("chats", f"chat_{chat_id}")
+                destination_folder = os.path.join("data", "chats", f"chat_{chat_id}")
             else:  # file_type == "code"
-                destination_folder = os.path.join("code", f"chat_{chat_id}")
+                destination_folder = os.path.join("data", "code", f"chat_{chat_id}")
 
             # Ensure chat folder exists
             os.makedirs(destination_folder, exist_ok=True)

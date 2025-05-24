@@ -12,11 +12,11 @@ from fastapi import HTTPException, Response
 from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from app_init import app
+from ..app_init import app
 
 # Define the directory where static and images files are located
 STATIC_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "static")
-IMAGES_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "images")
+IMAGES_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "images")
 ASSETS_DIR = os.path.join(STATIC_DIR, "assets")
 
 # Create directories if they don't exist

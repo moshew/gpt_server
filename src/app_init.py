@@ -24,13 +24,13 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi import Header, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from database import SessionLocal, Chat, Message, User, get_engine_status
+from .database import SessionLocal, Chat, Message, User, get_engine_status
 
 # Import the code analysis handler and code-specific endpoints
 #from code_rag import CodeAnalysisHandler
 
 # Import modules containing the application endpoints
-from db_manager import cleanup_stale_db_sessions
+from .db_manager import cleanup_stale_db_sessions
 
 # Create FastAPI app with proxy headers configuration
 app = FastAPI(
@@ -120,7 +120,7 @@ def load_available_models() -> List[Tuple[str, str]]:
     """Load available models from file"""
     models = []
     try:
-        with open("avaliable_models.txt", "r", encoding="utf-8") as f:
+        with open("config/avaliable_models.txt", "r", encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if line:
@@ -138,7 +138,7 @@ async def load_system_prompt():
     import aiofiles
     
     try:
-        async with aiofiles.open("system_prompt.txt", "r", encoding="utf-8") as f:
+        async with aiofiles.open("config/system_prompt.txt", "r", encoding="utf-8") as f:
             return await f.read()
     except Exception as e:
         print(f"Error loading system prompt: {e}")
@@ -156,24 +156,20 @@ async def startup_event():
     app.state.available_models = load_available_models()
     print(f"Loaded {len(app.state.available_models)} available models")
     
-    # Create directories if they don't exist
-    os.makedirs("chats", exist_ok=True)
-    os.makedirs("code", exist_ok=True)
-    os.makedirs("images", exist_ok=True)
-    os.makedirs("rag_storage", exist_ok=True)
-    os.makedirs("knowledgebase", exist_ok=True)
+    # Create necessary directories
+    create_directories()
 
     # Initialize code analyzer
     #app.state.code_analyzer = CodeAnalysisHandler(chats_dir="chats")
     
     # Import document_rag after FastAPI app is created to avoid circular imports
-    from rag_documents import document_rag_handler
+    from .rag_documents import document_rag_handler
     
     # Store document RAG handler in app state
     app.state.document_rag_handler = document_rag_handler
     
     # Import web search handler after FastAPI app is created
-    from query_web import web_search_handler
+    from .query_web import web_search_handler
     
     # Store web search handler in app state
     app.state.web_search_handler = web_search_handler
@@ -213,3 +209,27 @@ async def health_check():
         "version": "1.0.0",
         "db_pool": db_status
     }
+
+# Create necessary directories
+def create_directories():
+    """Create all necessary directories for the application"""
+    base_data_dir = "data"
+    
+    directories = [
+        base_data_dir,
+        f"{base_data_dir}/chats",
+        f"{base_data_dir}/code", 
+        f"{base_data_dir}/images",
+        f"{base_data_dir}/knowledgebase",
+        f"{base_data_dir}/rag"
+    ]
+    
+    for directory in directories:
+        if not os.path.exists(directory):
+            os.makedirs(directory, exist_ok=True)
+            print(f"Created directory: {directory}")
+        else:
+            print(f"Directory already exists: {directory}")
+
+# Call the function to create directories
+create_directories()

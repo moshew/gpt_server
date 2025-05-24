@@ -1,20 +1,15 @@
 """
-Main application module for the Chat System with Code Analysis capabilities
-
-This is the entry point to the application that imports all the modules
-and starts the FastAPI server.
+Main entry point for the GPT Server application
 """
 
-# Import the core application components
-from app_init import app
+import sys
+import os
 
-# Import database initialization
-import db_manager
+# Add current directory to Python path
+sys.path.insert(0, os.path.dirname(__file__))
 
-# Import all endpoints via the endpoints package
-import endpoints
+from src.main import app
 
-# This is the entry point when running with uvicorn directly
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=8000) 

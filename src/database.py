@@ -5,7 +5,18 @@ from sqlalchemy.orm import sessionmaker, declarative_base
 import secrets
 import bcrypt
 import datetime
-from config import DATABASE_URL
+import sys
+import os
+
+# Add parent directory to path for config access
+sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+
+from config.config import DATABASE_URL
+
+# Check if DATABASE_URL is set, provide default if not
+if not DATABASE_URL:
+    print("Warning: DATABASE_URL not set in environment variables. Using default PostgreSQL database.")
+    DATABASE_URL = "postgresql://user:password@localhost:5432/gpt_server"
 
 # Convert regular SQLAlchemy DATABASE_URL to async version
 # Replace postgresql:// with postgresql+asyncpg:// if needed

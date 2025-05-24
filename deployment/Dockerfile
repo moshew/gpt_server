@@ -9,13 +9,11 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first to leverage Docker cache
-COPY deployment/requirements.txt .
+COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the application source code
-COPY src/ ./src/
-COPY config/ ./config/
-COPY main.py .
+# Copy the rest of the application from parent directory
+COPY .. .
 
 # Set Python path to include src directory
 ENV PYTHONPATH="/app/src:/app"
@@ -24,4 +22,4 @@ ENV PYTHONPATH="/app/src:/app"
 ENV PYTHONUNBUFFERED=1
 
 # Command to run the application using Gunicorn with Uvicorn workers
-CMD ["gunicorn", "src.main:app", "--workers", "2", "--worker-class", "uvicorn.workers.UvicornWorker", "--bind", "0.0.0.0:8000"] 
+CMD ["gunicorn", "src.main:app", "--workers", "2", "--worker-class", "uvicorn.workers.UvicornWorker", "--bind", "0.0.0.0:8000"]

@@ -20,7 +20,7 @@ import logging
 from typing import Dict, List, Optional, Tuple, Any
 from functools import partial
 
-from utils import run_in_executor
+from .utils import run_in_executor
 import numpy as np
 import faiss
 from langchain.text_splitter import RecursiveCharacterTextSplitter
@@ -35,7 +35,7 @@ from langchain_community.document_loaders import (
 from fastapi import UploadFile, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from utils import embed_documents, embed_query
+from .utils import embed_documents, embed_query
 
 # Import aiofiles for async file operations
 import aiofiles
@@ -662,8 +662,8 @@ class DocumentRAG:
         
         return ""
 
-# Create DocumentRAG instance with updated paths
-document_rag_handler = DocumentRAG(docs_dir="chats", rag_storage_dir="rag_storage")
+# Create DocumentRAG instance with updated paths under data directory
+document_rag_handler = DocumentRAG(docs_dir="data/chats", rag_storage_dir="data/rag")
 
 # Function to get DocumentRAG for specific chat
 def get_document_rag(chat_id: str) -> DocumentRAG:

@@ -14,8 +14,8 @@ import tempfile
 import requests
 
 from fastapi import UploadFile
-from utils import run_in_executor
-from utils import execute_image_generation
+from .utils import run_in_executor
+from .utils import execute_image_generation
 
 class ImageService:
     """Service for handling image generation and variation"""
@@ -129,8 +129,8 @@ class ImageService:
             print(f"Error saving image from URL: {e}")
             return False
 
-# Create DocumentRAG instance with updated paths
-image_handler = ImageService(images_dir="images")
+# Create ImageService instance with updated paths under data directory
+image_handler = ImageService(images_dir="data/images")
 
 # Function to get DocumentRAG for specific chat
 def get_image_service() -> ImageService:

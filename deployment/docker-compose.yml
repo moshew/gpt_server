@@ -2,13 +2,13 @@ version: '3.8'
 
 services:
   app:
-    build: .
+    build: ..
     ports:
       - "8000:8000"
     env_file:
-      - .env
+      - ../.env
     volumes:
-      - ./data:/app/data
+      - ../data:/app/data
     restart: unless-stopped
 
   nginx:
@@ -17,8 +17,8 @@ services:
       - "80:80"
       - "443:443"
     volumes:
-      - ./deployment/nginx/nginx.conf:/etc/nginx/nginx.conf
-      - ./deployment/nginx/certs:/etc/nginx/ssl
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf
+      - ./nginx/certs:/etc/nginx/ssl
     depends_on:
       - app
     restart: unless-stopped
@@ -33,7 +33,7 @@ services:
       - "5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./deployment/init-db:/docker-entrypoint-initdb.d/
+      - ./init-db:/docker-entrypoint-initdb.d/
     restart: unless-stopped
 
   pgadmin:

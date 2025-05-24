@@ -224,26 +224,34 @@ def format_code_context(code_files: List[Tuple[int, str, str]]) -> str:
 
 def get_code_context(chat_id: int) -> str:
     """
-    Get the code context for a specific chat
+    Get formatted code context for a specific chat
     
     Args:
         chat_id: Chat identifier
         
     Returns:
-        Formatted code context string
+        Formatted code context string or empty string if no code files
     """
-    code_dir = os.path.join("code", f"chat_{chat_id}")
-    
     try:
+        # Use the new data directory structure
+        code_dir = os.path.join("data", "code", f"chat_{chat_id}")
+        
+        # Check if directory exists
+        if not os.path.exists(code_dir):
+            logger.info(f"No code directory found for chat {chat_id}")
+            return ""
+        
+        # Collect and format code files
         code_files = collect_code_files(code_dir)
         
-        if code_files:
-            logger.info(f"Added {len(code_files)} code files to context for chat {chat_id}")
-            return format_code_context(code_files)
-        else:
+        if not code_files:
             logger.info(f"No code files found for chat {chat_id}")
             return ""
-            
+        
+        context = format_code_context(code_files)
+        logger.info(f"Generated code context for chat {chat_id} with {len(code_files)} files")
+        return context
+        
     except Exception as e:
-        logger.error(f"Error gathering code files for chat {chat_id}: {e}")
+        logger.error(f"Error generating code context for chat {chat_id}: {e}")
         return ""

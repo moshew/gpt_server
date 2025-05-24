@@ -19,9 +19,15 @@ from bs4 import BeautifulSoup
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from database import Message
-from config import SERPER_API_KEY
-from utils import call_llm
+from .database import Message
+import sys
+import os
+
+# Add parent directory to path for config access
+sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+
+from config.config import SERPER_API_KEY
+from .utils import call_llm
 
 # Configure logging
 logging.basicConfig(

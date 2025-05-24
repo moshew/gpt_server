@@ -8,19 +8,24 @@ This module:
 """
 
 import os
+import sys
+# Add parent directory to path for config access
+sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+
 from typing import Optional, Dict, Any, List
 import json
 from datetime import datetime, timedelta
 from urllib.parse import urlencode
 
 import httpx
-from fastapi import HTTPException, Request
+from fastapi import Depends, HTTPException, Request
+from fastapi.responses import RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from jose import jwt, JWTError
 
-from database import User, Chat, SessionLocal
-from config import MS_CLIENT_ID, MS_CLIENT_SECRET, MS_TENANT_ID, MS_REDIRECT_URI, SECRET_KEY
+from .database import User, Chat, SessionLocal
+from config.config import MS_CLIENT_ID, MS_CLIENT_SECRET, MS_TENANT_ID, MS_REDIRECT_URI, SECRET_KEY
 from functools import wraps
 
 # Microsoft OAuth2 URLs

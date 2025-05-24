@@ -22,26 +22,28 @@ import base64
 from typing import Optional, List
 from fastapi import Depends, BackgroundTasks, HTTPException, Query, File, UploadFile, Form, Request
 from fastapi.responses import StreamingResponse, JSONResponse
-from database import User
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.future import select
+from ..database import User, Message
 from langchain.schema import HumanMessage, SystemMessage
+from langchain.memory import ConversationBufferWindowMemory
 
-from app_init import app
-from auth import get_user_from_token, verify_chat_owner, verify_chat_ownership
-from db_manager import load_memory, save_message
-from database import SessionLocal
-from utils import process_langchain_messages
-from utils.sse import stream_text_as_sse, stream_generator_as_sse
-from rag_documents import get_document_rag, DocumentRAG
-from image_service import get_image_service
-from query_web import web_search_handler
-from query_code import get_code_context
+from ..app_init import app
+from ..auth import get_user_from_token, verify_chat_owner, verify_chat_ownership
+from ..database import SessionLocal
+from ..utils import process_langchain_messages
+from ..utils.sse import stream_text_as_sse, stream_generator_as_sse
+from ..rag_documents import get_document_rag, DocumentRAG
+from ..image_service import get_image_service
+from ..query_web import web_search_handler
+from ..query_code import get_code_context
 
 # Dictionary to track active queries, with chat_id as key and task/event objects as values
 active_queries = {}
 pending_queries = {}
 
 # Define path for knowledge bases
-KNOWLEDGE_BASE_DIR = os.environ.get("KNOWLEDGE_BASE_DIR", "knowledgebase")
+KNOWLEDGE_BASE_DIR = os.environ.get("KNOWLEDGE_BASE_DIR", "data/knowledgebase")
 CONTENT_TYPE_TO_EXT = {
     "image/png": "png",
     "image/gif": "gif",
@@ -142,6 +144,54 @@ async def cleanup_stale_active_queries():
     except Exception as e:
         logger.error(f"Error during active query cleanup: {e}")
 
+async def load_memory(db: AsyncSession, chat_id: int):
+    """
+    Load conversation history from the database
+    
+    Args:
+        db: Database session
+        chat_id: Chat ID to load history for
+        
+    Returns:
+        LangChain memory object with loaded messages
+    """
+    memory = ConversationBufferWindowMemory(k=10, return_messages=True)
+    
+    try:
+        # Query messages with async syntax
+        result = await db.execute(
+            select(Message).filter(Message.chat_id == chat_id).order_by(Message.timestamp)
+        )
+        messages = result.scalars().all()
+        
+        for msg in messages:
+            if msg.sender == "user":
+                memory.chat_memory.add_user_message(msg.content)
+            else:
+                memory.chat_memory.add_ai_message(msg.content)
+    except Exception as e:
+        print(f"Error loading memory: {e}")
+        # Continue with empty memory if there's an error
+    
+    return memory
+
+async def save_message(db: AsyncSession, chat_id: int, sender: str, content: str):
+    """
+    Save a message to the database with retry capability and session safety
+    
+    Args:
+        db: Database session
+        chat_id: Chat ID to save message in
+        sender: Message sender ("user" or "assistant")
+        content: Message content
+    """
+    try:
+        message = Message(chat_id=chat_id, sender=sender, content=content)
+        db.add(message)
+        await db.commit()
+    except Exception as e:
+        logger.error(f"Error saving message: {e}")
+            
 # Schedule periodic cleanup at application startup
 @app.on_event("startup")
 async def schedule_active_query_cleanup():
@@ -397,7 +447,7 @@ async def query_chat(
         if web_search:
             logger.info(f"Web search requested for chat {chat_id}")
             # Import here to avoid circular imports
-            from query_web import web_search_handler
+            from ..query_web import web_search_handler
             
             # Pass the database session to allow access to chat history
             async with SessionLocal() as db:

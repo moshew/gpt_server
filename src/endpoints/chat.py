@@ -15,12 +15,12 @@ from pydantic import BaseModel
 
 from fastapi import  HTTPException, Request
 from sqlalchemy.future import select
-from database import Chat, Message, File
+from ..database import Chat, Message, File
 
-from app_init import app
-from auth import get_current_user
-from database import SessionLocal
-from utils import run_in_executor, call_llm
+from ..app_init import app
+from ..auth import get_current_user
+from ..database import SessionLocal
+from ..utils import run_in_executor, call_llm
 
 # Class for chat creation request
 class ChatRequest(BaseModel):
