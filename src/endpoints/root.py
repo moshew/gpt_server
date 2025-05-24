@@ -77,16 +77,72 @@ async def root():
           <head>
             <meta charset="UTF-8" />
             <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-            <title>React App</title>
+            <title>Loading Error - ElbitGPT</title>
             <link rel="stylesheet" href="/assets/index-BZCThWaO.css">
+            <style>
+              body {
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                margin: 0;
+                padding: 0;
+                min-height: 100vh;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+              }
+              .error-container {
+                background: white;
+                border-radius: 12px;
+                padding: 2rem;
+                box-shadow: 0 10px 25px rgba(0,0,0,0.1);
+                text-align: center;
+                max-width: 500px;
+                margin: 20px;
+              }
+              .error-icon {
+                font-size: 3rem;
+                margin-bottom: 1rem;
+              }
+              h1 {
+                color: #e74c3c;
+                margin-bottom: 1rem;
+                font-size: 1.5rem;
+              }
+              p {
+                color: #666;
+                line-height: 1.5;
+                margin-bottom: 1rem;
+              }
+              .reload-btn {
+                background: #3498db;
+                color: white;
+                border: none;
+                padding: 12px 24px;
+                border-radius: 6px;
+                cursor: pointer;
+                font-size: 1rem;
+                margin-top: 1rem;
+                transition: background 0.3s;
+              }
+              .reload-btn:hover {
+                background: #2980b9;
+              }
+            </style>
           </head>
           <body>
-            <div id="root"></div>
-            <script>
-              document.addEventListener('DOMContentLoaded', function() {
-                document.getElementById('root').innerHTML = '<div style="padding: 20px; text-align: center;"><h1>React App Setup Required</h1><p>Please ensure your React application files are copied to the static directory.</p></div>';
-              });
-            </script>
+            <div class="error-container">
+              <div class="error-icon">⚠️</div>
+              <h1>Website Failed to Load</h1>
+              <p>We couldn't load the main website files.</p>
+              <p>There might be an issue with React files or server configuration.</p>
+              <p><strong>Possible solutions:</strong></p>
+              <ul style="text-align: left; margin: 1rem 0;">
+                <li>Ensure React files are in the static directory</li>
+                <li>Check that the server is running properly</li>
+                <li>Try refreshing the page</li>
+              </ul>
+              <button class="reload-btn" onclick="window.location.reload()">Reload Page</button>
+            </div>
           </body>
         </html>
         """
