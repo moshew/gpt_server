@@ -15,8 +15,9 @@ from fastapi.staticfiles import StaticFiles
 from ..app_init import app
 
 # Define the directory where static and images files are located
-STATIC_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "static")
-IMAGES_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "images")
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+STATIC_DIR = os.path.join(PROJECT_ROOT, "static")
+IMAGES_DIR = os.path.join(PROJECT_ROOT, "data", "images")
 ASSETS_DIR = os.path.join(STATIC_DIR, "assets")
 
 # Create directories if they don't exist
@@ -77,7 +78,7 @@ async def root():
             <meta charset="UTF-8" />
             <meta name="viewport" content="width=device-width, initial-scale=1.0" />
             <title>React App</title>
-            <link rel="stylesheet" href="/assets/index-Deoe4bZ1.css">
+            <link rel="stylesheet" href="/assets/index-BZCThWaO.css">
           </head>
           <body>
             <div id="root"></div>
