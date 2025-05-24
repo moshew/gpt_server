@@ -162,6 +162,7 @@ See `deployment/README.md` for detailed deployment instructions.
 ### Utility
 - `GET /health` - Health check with database status
 - `GET /query/available_models` - Get available AI models
+- `GET /debug/pending_sessions` - Debug endpoint for session management (shows pending image upload sessions)
 
 ## Development
 

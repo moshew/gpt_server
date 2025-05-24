@@ -42,6 +42,9 @@ from ..query_code import get_code_context
 active_queries = {}
 pending_queries = {}
 
+# Session cleanup settings
+SESSION_EXPIRY_MINUTES = 30  # Sessions expire after 30 minutes
+
 # Define path for knowledge bases
 KNOWLEDGE_BASE_DIR = os.environ.get("KNOWLEDGE_BASE_DIR", "data/knowledgebase")
 CONTENT_TYPE_TO_EXT = {
@@ -115,10 +118,29 @@ def unregister_active_query(chat_id):
     if chat_id_str in active_queries:
         del active_queries[chat_id_str]
 
-# Function to clean up stale active queries
+def cleanup_expired_sessions():
+    """Clean up expired sessions from pending_queries"""
+    global pending_queries
+    
+    current_time = time.time()
+    expired_sessions = []
+    
+    for session_id, session_data in pending_queries.items():
+        # Check if session is older than expiry time
+        if current_time - session_data.get("created_at", 0) > (SESSION_EXPIRY_MINUTES * 60):
+            expired_sessions.append(session_id)
+    
+    # Remove expired sessions
+    for session_id in expired_sessions:
+        logger.info(f"Removing expired session: {session_id}")
+        del pending_queries[session_id]
+    
+    if expired_sessions:
+        logger.info(f"Cleaned up {len(expired_sessions)} expired sessions")
+
 async def cleanup_stale_active_queries():
     """
-    Periodically clean up stale active queries
+    Periodically clean up stale active queries and expired sessions
     
     This function removes queries that have been active for too long,
     which could indicate they were never properly unregistered.
@@ -126,6 +148,9 @@ async def cleanup_stale_active_queries():
     global active_queries
     
     try:
+        # Clean up expired sessions first
+        cleanup_expired_sessions()
+        
         current_time = asyncio.get_event_loop().time()
         stale_threshold = 3600  # 1 hour in seconds
         
@@ -201,8 +226,8 @@ async def schedule_active_query_cleanup():
     async def cleanup_task():
         while True:
             await cleanup_stale_active_queries()
-            # Run every 30 minutes
-            await asyncio.sleep(1800)
+            # Run every 5 minutes (more frequent cleanup)
+            await asyncio.sleep(300)
     
     # Start the cleanup task in the background
     asyncio.create_task(cleanup_task())
@@ -302,6 +327,9 @@ async def start_query_session(
     Returns:
         Session ID to use with query_chat
     """
+    # Clean up expired sessions before creating new one
+    cleanup_expired_sessions()
+    
     session_id = str(uuid.uuid4())
     session_data = {
         "chat_id": chat_id,
@@ -309,6 +337,8 @@ async def start_query_session(
         "created_at": time.time(),
         "images": []
     }
+    
+    logger.info(f"Creating new session {session_id} for chat {chat_id} with {len(images) if images else 0} images")
     
     # Process and store images in session
     if images:
@@ -333,10 +363,13 @@ async def start_query_session(
                     
                     # Reset file pointer
                     await img.seek(0)
+                    logger.info(f"Processed image {img.filename} for session {session_id}")
                 except Exception as e:
-                    logger.error(f"Error processing image in session: {e}")
+                    logger.error(f"Error processing image {img.filename} in session {session_id}: {e}")
     
     pending_queries[session_id] = session_data
+    logger.info(f"Session {session_id} created successfully. Total pending sessions: {len(pending_queries)}")
+    
     return {"session_id": session_id}
 
 @app.get("/query/")
@@ -383,15 +416,33 @@ async def query_chat(
 
     # Process a user query, either directly or by session_id.
     if session_id:
+        logger.info(f"Processing query with session_id: {session_id} for chat {chat_id}")
+        
+        # Clean up expired sessions first
+        cleanup_expired_sessions()
+        
         # Retrieve session without removing it yet - will be removed when first data chunk arrives
         session = pending_queries.get(session_id)
         if not session:
+            logger.error(f"Session {session_id} not found. Available sessions: {list(pending_queries.keys())}")
             raise HTTPException(status_code=400, detail="Invalid or expired session_id")
+            
+        # Verify chat_id matches
         if session["chat_id"] != chat_id:
+            logger.error(f"Chat ID mismatch: session has {session['chat_id']}, request has {chat_id}")
             raise HTTPException(status_code=400, detail="chat_id mismatch with session_id")
+            
+        # Check if session is expired (additional safety check)
+        current_time = time.time()
+        if current_time - session.get("created_at", 0) > (SESSION_EXPIRY_MINUTES * 60):
+            logger.error(f"Session {session_id} has expired")
+            del pending_queries[session_id]
+            raise HTTPException(status_code=400, detail="Session has expired")
+            
         query = session["query"]
         # Get images from session if they exist
         image_contents = session.get("images", [])
+        logger.info(f"Using session {session_id} with {len(image_contents)} images")
     else:
         if not query:
             raise HTTPException(status_code=400, detail="Missing query")
@@ -517,7 +568,11 @@ async def query_chat(
                     
                     # If this is the first chunk, remove session data from pending_queries
                     if first_chunk and session_id and session_id in pending_queries:
-                        del pending_queries[session_id]
+                        try:
+                            del pending_queries[session_id]
+                            logger.info(f"Removed session {session_id} from pending_queries after first chunk")
+                        except KeyError:
+                            logger.warning(f"Session {session_id} was already removed from pending_queries")
                         first_chunk = False
                     
                     nonlocal full_response
@@ -785,3 +840,31 @@ async def get_available_models():
     ]
     
     return JSONResponse(content={"models": models})
+
+# Debug endpoint for pending sessions
+@app.get("/debug/pending_sessions")
+async def get_pending_sessions():
+    """
+    Debug endpoint to check pending sessions
+    
+    Returns:
+        Information about pending sessions
+    """
+    current_time = time.time()
+    session_info = []
+    
+    for session_id, session_data in pending_queries.items():
+        age_minutes = (current_time - session_data.get("created_at", 0)) / 60
+        session_info.append({
+            "session_id": session_id,
+            "chat_id": session_data.get("chat_id"),
+            "age_minutes": round(age_minutes, 2),
+            "image_count": len(session_data.get("images", [])),
+            "query_preview": session_data.get("query", "")[:100] + "..." if len(session_data.get("query", "")) > 100 else session_data.get("query", "")
+        })
+    
+    return {
+        "total_sessions": len(pending_queries),
+        "session_expiry_minutes": SESSION_EXPIRY_MINUTES,
+        "sessions": session_info
+    }
