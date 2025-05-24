@@ -129,11 +129,13 @@ uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
 
 ### 5. Docker Deployment
 
-For production deployment with Docker:
+For production deployment with Docker, navigate to the deployment directory:
 ```bash
 cd deployment
 docker-compose up -d
 ```
+
+**Note**: All Docker-related files (Dockerfile, docker-compose.yml, .dockerignore) are located in the `deployment/` directory to keep deployment configuration separate from the application code.
 
 See `deployment/README.md` for detailed deployment instructions.
 

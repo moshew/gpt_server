@@ -3,16 +3,7 @@
 !.gitignore
 
 # Ignore specific directories
-chat/
-chats/
-code/
-code_rag_storage/
-gpt_code/
-images/
-knowledgebase/
-nltk_data/
-old/
-rag_storage/
+data/
 __pycache__/
 
 # Ignore file extensions
