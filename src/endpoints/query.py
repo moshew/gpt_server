@@ -173,6 +173,13 @@ async def load_memory(db: AsyncSession, chat_id: int):
     """
     Load conversation history from the database
     
+    This function loads the last 20 messages (10 user-assistant pairs) and processes them:
+    - User text messages: Added to memory as-is
+    - User image messages: Converted to multimodal format for LLM
+    - User multimodal messages: Added as-is (contains text + images)
+    - Assistant text messages: Added to memory as-is  
+    - Assistant image messages: Skipped (generated images not included in context)
+    
     Args:
         db: Database session
         chat_id: Chat ID to load history for
@@ -193,11 +200,64 @@ async def load_memory(db: AsyncSession, chat_id: int):
         
         for msg in messages:
             if msg.sender == "user":
-                memory.add_user_message(msg.content)
+                # Check if this is an image message
+                try:
+                    content_json = json.loads(msg.content)
+                    if isinstance(content_json, dict) and content_json.get("type") == "image":
+                        # This is a user image message - add it to memory
+                        image_data = content_json.get("data", "")
+                        image_format = content_json.get("format", "image/jpeg")
+                        
+                        # Create multimodal message content for image
+                        multimodal_content = [
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:{image_format};base64,{image_data}"
+                                }
+                            }
+                        ]
+                        
+                        memory.add_user_message(multimodal_content)
+                        logger.info(f"Added user image message to memory for chat {chat_id}")
+                    else:
+                        # Regular text message or other JSON content
+                        memory.add_user_message(msg.content)
+                except (json.JSONDecodeError, TypeError):
+                    # Check if content might be a multimodal message (list)
+                    try:
+                        if isinstance(msg.content, str) and msg.content.startswith('['):
+                            # Try to parse as list
+                            content_list = json.loads(msg.content)
+                            if isinstance(content_list, list):
+                                # This might be a multimodal message - keep it as is
+                                memory.add_user_message(content_list)
+                                logger.info(f"Added multimodal user message to memory for chat {chat_id}")
+                            else:
+                                # Regular text message
+                                memory.add_user_message(msg.content)
+                        else:
+                            # Regular text message
+                            memory.add_user_message(msg.content)
+                    except (json.JSONDecodeError, TypeError):
+                        # Not JSON - treat as regular text message
+                        memory.add_user_message(msg.content)
             else:
-                memory.add_ai_message(msg.content)
+                # Assistant message
+                try:
+                    content_json = json.loads(msg.content)
+                    if isinstance(content_json, dict) and content_json.get("type") == "image":
+                        # Skip assistant image messages (like generated images)
+                        logger.info(f"Skipping assistant image message from memory for chat {chat_id}")
+                        continue
+                    else:
+                        # Regular assistant text message
+                        memory.add_ai_message(msg.content)
+                except (json.JSONDecodeError, TypeError):
+                    # Not JSON or invalid JSON - treat as regular text message
+                    memory.add_ai_message(msg.content)
     except Exception as e:
-        print(f"Error loading memory: {e}")
+        logger.error(f"Error loading memory for chat {chat_id}: {e}")
         # Continue with empty memory if there's an error
     
     return memory
