@@ -193,7 +193,7 @@ async def process_archive(
                                         file_type=file_type,
                                         file_name=extracted_file
                                     )
-                                    async_sessdbion.add(db_file)
+                                    db.add(db_file)
                                     batch_results.append(extracted_file)
                                     
                                 except Exception as e:

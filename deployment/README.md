@@ -68,17 +68,55 @@ The following optimizations have been implemented for proper SSE streaming in Do
 3. **Check browser console** - Look for EventSource connection errors
 4. **Monitor container logs** - Watch for buffering or timeout issues
 
-```bash
-# View application logs
-docker-compose logs -f app
-
-# View nginx logs
-docker-compose logs -f nginx
-```
-
 ## Environment Variables
 
 Copy `env.sample` to `../.env` and configure:
+
+## Large File Upload Support
+
+The deployment is configured to support large file uploads (up to 500MB by default):
+
+### Configuration Settings
+
+**Nginx Configuration:**
+- `client_max_body_size 500M` - Maximum file size allowed
+- `client_body_timeout 300s` - Timeout for file upload
+- `proxy_request_buffering off` - Stream uploads directly to backend
+- `proxy_max_temp_file_size 0` - Disable temp files for uploads
+
+**Gunicorn Configuration:**
+- Extended timeout settings for processing large files
+- Request line and field size limits increased
+
+### Customizing File Size Limits
+
+To change the maximum file size, edit `deployment/nginx/nginx.conf`:
+
+```nginx
+# Change 500M to your desired limit
+client_max_body_size 1G;  # For 1GB limit
+```
+
+**Important:** After changing the limit:
+1. Rebuild the Docker containers: `docker-compose down && docker-compose up -d`
+2. Ensure sufficient disk space is available
+3. Consider increasing timeouts for very large files
+
+### Supported File Types
+
+The application supports:
+- Documents: PDF, TXT, DOCX, CSV
+- Archives: ZIP, TAR, RAR (auto-extracted)
+- Images: PNG, JPG, GIF, WebP, SVG
+- Code files: All text-based formats
+
+### Troubleshooting Large Uploads
+
+If uploads fail:
+1. Check Nginx error logs: `docker-compose logs nginx`
+2. Verify disk space: `df -h`
+3. Monitor upload progress in browser dev tools
+4. For files >500MB, increase the `client_max_body_size` setting
 
 ## Services
 
