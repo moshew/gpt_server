@@ -26,7 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from ..database import User, Message
 from langchain.schema import HumanMessage, SystemMessage
-from langchain.memory import ConversationBufferWindowMemory
+from langchain_core.chat_history import InMemoryChatMessageHistory
 
 from ..app_init import app
 from ..auth import get_user_from_token, verify_chat_owner, verify_chat_ownership
@@ -155,20 +155,22 @@ async def load_memory(db: AsyncSession, chat_id: int):
     Returns:
         LangChain memory object with loaded messages
     """
-    memory = ConversationBufferWindowMemory(k=10, return_messages=True)
+    memory = InMemoryChatMessageHistory()
     
     try:
-        # Query messages with async syntax
+        # Query messages with async syntax, limit to last 20 messages (10 pairs)
         result = await db.execute(
-            select(Message).filter(Message.chat_id == chat_id).order_by(Message.timestamp)
+            select(Message).filter(Message.chat_id == chat_id)
+            .order_by(Message.timestamp.desc())
+            .limit(20)
         )
-        messages = result.scalars().all()
+        messages = list(reversed(result.scalars().all()))  # Reverse to get chronological order
         
         for msg in messages:
             if msg.sender == "user":
-                memory.chat_memory.add_user_message(msg.content)
+                memory.add_user_message(msg.content)
             else:
-                memory.chat_memory.add_ai_message(msg.content)
+                memory.add_ai_message(msg.content)
     except Exception as e:
         print(f"Error loading memory: {e}")
         # Continue with empty memory if there's an error
@@ -469,7 +471,7 @@ async def query_chat(
         
         try:
             # Create message chain to send to the LLM
-            conversation = [SystemMessage(content=system_prompt)] + memory.chat_memory.messages
+            conversation = [SystemMessage(content=system_prompt)] + memory.messages
             
             # Process image files if provided in the session
             # (No need to read files as they're already processed and stored in the session)
@@ -589,7 +591,7 @@ async def query_code(
         
         try:
             # Create message chain to send to the LLM
-            conversation = [SystemMessage(content=system_prompt)] + memory.chat_memory.messages
+            conversation = [SystemMessage(content=system_prompt)] + memory.messages
             
             # Add user query with code context
             if code_context:
