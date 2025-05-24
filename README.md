@@ -20,11 +20,9 @@ gpt_server/
 ├── main.py                 # Application entry point
 ├── src/                    # Source code
 │   ├── __init__.py
-│   ├── main.py            # FastAPI application setup
-│   ├── app_init.py        # Application initialization
+│   ├── app_init.py        # Application initialization and FastAPI setup
 │   ├── database.py        # Database models and configuration
 │   ├── auth.py            # Authentication logic
-│   ├── db_manager.py      # Database session management
 │   ├── rag_documents.py   # Document RAG functionality
 │   ├── query_code.py      # Code analysis functionality
 │   ├── query_web.py       # Web search functionality
@@ -124,7 +122,7 @@ python main.py
 
 Or with uvicorn directly:
 ```bash
-uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
+uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
 ### 5. Docker Deployment

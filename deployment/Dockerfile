@@ -22,4 +22,4 @@ ENV PYTHONPATH="/app/src:/app"
 ENV PYTHONUNBUFFERED=1
 
 # Command to run the application using Gunicorn with Uvicorn workers
-CMD ["gunicorn", "src.main:app", "--workers", "2", "--worker-class", "uvicorn.workers.UvicornWorker", "--bind", "0.0.0.0:8000"]
+CMD ["gunicorn", "main:app", "--workers", "2", "--worker-class", "uvicorn.workers.UvicornWorker", "--bind", "0.0.0.0:8000"]
