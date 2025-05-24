@@ -15,7 +15,7 @@ import os
 import openai
 from langchain.schema import HumanMessage, AIMessage, SystemMessage, BaseMessage
 from langchain_openai import AzureOpenAIEmbeddings
-from utils import run_in_executor
+from .async_helpers import run_in_executor
 from config import AZURE_API_KEY, AZURE_ENDPOINT, AZURE_API_VERSION
 from config import DALLE_API_KEY, DALLE_ENDPOINT, DALLE_API_VERSION
 
@@ -41,7 +41,7 @@ MODEL_CONFIGS = {
         "max_tokens": 500,
     },
     "mini": {
-        "deployment_name": "o3-mini",
+        "deployment_name": "gpt-4.1",
         "temperature": 0.3,
         "max_tokens": 1000,
     }

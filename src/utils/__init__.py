@@ -38,19 +38,3 @@ from .llm_helpers_azure import (
     embed_query,
     execute_image_generation
 )
-
-
-"""
-# RAG-specific utilities
-from .rag_utils import (
-    chunk_content,
-    chunk_content_async
-)
-"""
-
-# Make legacy aliases available for backward compatibility
-# These will maintain compatibility with existing code
-# while encouraging use of the more specialized modules directly
-
-# Alias for backward compatibility
-run_cpu_bound = run_in_executor
