@@ -353,10 +353,11 @@ async def _get_session_data(session_id: str, chat_id: int) -> tuple[Optional[str
         return None, []
     
     logger.info(f"Processing query with session_id: {session_id} for chat {chat_id}")
-    cleanup_expired_sessions()
     
     session = pending_queries.get(session_id)
     if not session:
+        # Only clean up if session not found - might be expired
+        cleanup_expired_sessions()
         logger.error(f"Session {session_id} not found. Available sessions: {list(pending_queries.keys())}")
         raise HTTPException(status_code=400, detail="Invalid or expired session_id")
         
