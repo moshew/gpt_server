@@ -125,18 +125,25 @@ def cleanup_expired_sessions():
     current_time = time.time()
     expired_sessions = []
     
+    logger.info(f"Starting cleanup - {len(pending_queries)} sessions before cleanup")
+    
     for session_id, session_data in pending_queries.items():
+        age_seconds = current_time - session_data.get("created_at", 0)
+        age_minutes = age_seconds / 60
         # Check if session is older than expiry time
-        if current_time - session_data.get("created_at", 0) > (SESSION_EXPIRY_MINUTES * 60):
-            expired_sessions.append(session_id)
+        if age_seconds > (SESSION_EXPIRY_MINUTES * 60):
+            expired_sessions.append((session_id, age_minutes))
+            logger.info(f"Session {session_id} marked for expiry - age: {age_minutes:.2f} minutes")
     
     # Remove expired sessions
-    for session_id in expired_sessions:
-        logger.info(f"Removing expired session: {session_id}")
+    for session_id, age_minutes in expired_sessions:
+        logger.info(f"Removing expired session: {session_id} (age: {age_minutes:.2f} minutes)")
         del pending_queries[session_id]
     
     if expired_sessions:
         logger.info(f"Cleaned up {len(expired_sessions)} expired sessions")
+    else:
+        logger.info(f"No expired sessions found - {len(pending_queries)} sessions remain")
 
 async def cleanup_stale_active_queries():
     """
@@ -353,10 +360,13 @@ async def _get_session_data(session_id: str, chat_id: int) -> tuple[Optional[str
         return None, []
     
     logger.info(f"Processing query with session_id: {session_id} for chat {chat_id}")
+    logger.info(f"Current pending_queries keys: {list(pending_queries.keys())}")
+    logger.info(f"Total pending sessions: {len(pending_queries)}")
     
     session = pending_queries.get(session_id)
     if not session:
         # Only clean up if session not found - might be expired
+        logger.warning(f"Session {session_id} not found in pending_queries")
         cleanup_expired_sessions()
         logger.error(f"Session {session_id} not found. Available sessions: {list(pending_queries.keys())}")
         raise HTTPException(status_code=400, detail="Invalid or expired session_id")
@@ -368,8 +378,11 @@ async def _get_session_data(session_id: str, chat_id: int) -> tuple[Optional[str
         
     # Check if session is expired
     current_time = time.time()
-    if current_time - session.get("created_at", 0) > (SESSION_EXPIRY_MINUTES * 60):
-        logger.error(f"Session {session_id} has expired")
+    session_age = current_time - session.get("created_at", 0)
+    logger.info(f"Session {session_id} age: {session_age:.2f} seconds ({session_age/60:.2f} minutes)")
+    
+    if session_age > (SESSION_EXPIRY_MINUTES * 60):
+        logger.error(f"Session {session_id} has expired (age: {session_age/60:.2f} minutes)")
         del pending_queries[session_id]
         raise HTTPException(status_code=400, detail="Session has expired")
         
@@ -621,6 +634,7 @@ async def start_query_session(
                     logger.error(f"Error processing image {img.filename} in session {session_id}: {e}")
     
     pending_queries[session_id] = session_data
+    logger.info(f"Session {session_id} saved to pending_queries. pending_queries keys: {list(pending_queries.keys())}")
     logger.info(f"Session {session_id} created successfully. Total pending sessions: {len(pending_queries)}")
     
     return {"session_id": session_id}
