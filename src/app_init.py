@@ -9,28 +9,18 @@ This module:
 """
 
 import os
-import openai
 import asyncio
-import time, datetime
+import time
 import contextlib
-from typing import Optional, AsyncGenerator, Dict, Any, List, Set, Tuple
-from functools import partial
-from pydantic import BaseModel
+from typing import Dict, Any, List, Set, Tuple
 
-from fastapi import FastAPI, Depends, HTTPException
-from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from fastapi import Header, HTTPException
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.future import select
 from .database import SessionLocal, Chat, Message, User, get_engine_status
 
 # Import the code analysis handler and code-specific endpoints
 #from code_rag import CodeAnalysisHandler
-
-# Import modules containing the application endpoints
-from .db_manager import cleanup_stale_db_sessions
 
 # Create FastAPI app with proxy headers configuration
 app = FastAPI(
@@ -179,19 +169,6 @@ async def startup_event():
     
     print("Application initialized successfully")
 
-# Add this to the startup event to schedule periodic cleanup
-@app.on_event("startup")
-async def schedule_db_cleanup():
-    """Schedule periodic database session cleanup"""
-    async def cleanup_task():
-        while True:
-            await cleanup_stale_db_sessions()
-            # Run every 5 minutes
-            await asyncio.sleep(300)
-    
-    # Start the cleanup task in the background
-    asyncio.create_task(cleanup_task())
-
 # Health check endpoint that includes DB pool status
 @app.get("/health")
 async def health_check():
@@ -228,8 +205,6 @@ def create_directories():
         if not os.path.exists(directory):
             os.makedirs(directory, exist_ok=True)
             print(f"Created directory: {directory}")
-        else:
-            print(f"Directory already exists: {directory}")
 
 # Call the function to create directories
 create_directories()
