@@ -340,28 +340,216 @@ async def stop_query(
             detail=f"Error stopping query: {str(e)}"
         )
 
+# --- Helper functions for query processing ---
+
+async def _get_session_data(session_id: str, chat_id: int) -> tuple[Optional[str], List[dict]]:
+    """
+    Retrieve and validate session data
+    
+    Returns:
+        tuple of (query, image_contents)
+    """
+    if not session_id:
+        return None, []
+    
+    logger.info(f"Processing query with session_id: {session_id} for chat {chat_id}")
+    cleanup_expired_sessions()
+    
+    session = pending_queries.get(session_id)
+    if not session:
+        logger.error(f"Session {session_id} not found. Available sessions: {list(pending_queries.keys())}")
+        raise HTTPException(status_code=400, detail="Invalid or expired session_id")
+        
+    # Verify chat_id matches
+    if session["chat_id"] != chat_id:
+        logger.error(f"Chat ID mismatch: session has {session['chat_id']}, request has {chat_id}")
+        raise HTTPException(status_code=400, detail="chat_id mismatch with session_id")
+        
+    # Check if session is expired
+    current_time = time.time()
+    if current_time - session.get("created_at", 0) > (SESSION_EXPIRY_MINUTES * 60):
+        logger.error(f"Session {session_id} has expired")
+        del pending_queries[session_id]
+        raise HTTPException(status_code=400, detail="Session has expired")
+        
+    query = session["query"]
+    image_contents = session.get("images", [])
+    logger.info(f"Using session {session_id} with query='{query}' and {len(image_contents)} images")
+    
+    return query, image_contents
+
+def _prepare_image_messages(image_contents: List[dict], chat_id: int) -> List[str]:
+    """
+    Convert image contents to JSON messages
+    
+    Returns:
+        List of JSON strings for image messages
+    """
+    img_json_messages = []
+    if not image_contents:
+        return img_json_messages
+        
+    for img in image_contents:
+        try:
+            img_json = json.dumps({
+                "type": "image",
+                "data": img["base64"],
+                "format": img["content_type"]
+            })
+            img_json_messages.append(img_json)
+            logger.info(f"Prepared image message for chat {chat_id}")
+        except Exception as e:
+            logger.error(f"Error preparing image message: {e}")
+    
+    return img_json_messages
+
+async def _get_document_context(
+    chat_id: int, 
+    query: Optional[str], 
+    is_code: bool, 
+    kb_name: Optional[str], 
+    web_search: bool
+) -> str:
+    """
+    Get document context based on query type and parameters
+    
+    Returns:
+        Document context string
+    """
+    document_context = ""
+    
+    try:
+        if is_code:
+            # Use code context for code-specific queries
+            logger.info(f"Using code context for chat {chat_id}")
+            code_context = get_code_context(chat_id)
+            if code_context:
+                document_context = code_context
+                logger.info(f"Retrieved code context for chat {chat_id}")
+            else:
+                logger.info(f"No code context available for chat {chat_id}")
+                
+        elif kb_name:
+            # Use specified knowledge base
+            logger.info(f"Using knowledge base: {kb_name} for chat {chat_id}")
+            kb_path = os.path.join(KNOWLEDGE_BASE_DIR, kb_name)
+            if os.path.exists(kb_path) and query:  # KB requires query
+                kb_rag = DocumentRAG(docs_dir=KNOWLEDGE_BASE_DIR, rag_storage_dir=KNOWLEDGE_BASE_DIR)
+                document_context = await kb_rag.get_document_context(kb_name, query, top_k=5)
+                
+                if document_context:
+                    document_context = f"Information from knowledge base '{kb_name}':\n{document_context}"
+                    logger.info(f"Retrieved context from knowledge base {kb_name} for chat {chat_id}")
+                else:
+                    logger.warning(f"No relevant context found in knowledge base {kb_name} for chat {chat_id}")
+            else:
+                logger.warning(f"Knowledge base {kb_name} not found or no query provided")
+                
+        else:
+            # Use document context from chat's documents (only if we have a query)
+            if query:
+                doc_rag = get_document_rag(str(chat_id))
+                document_context = await doc_rag.get_document_context(str(chat_id), query, top_k=3)
+                
+                if document_context:
+                    logger.info(f"Retrieved context from chat documents for chat {chat_id}")
+            else:
+                logger.info(f"No query provided for document RAG for chat {chat_id} - skipping document context")
+        
+        # Add web search context if requested (not for code queries)
+        if web_search and query and not is_code:
+            logger.info(f"Web search requested for chat {chat_id}")
+            from ..query_web import web_search_handler
+            
+            async with SessionLocal() as db:
+                web_context = await web_search_handler.get_document_context(
+                    db=db, chat_id=str(chat_id), query=query, top_k=5
+                )
+            
+            if web_context:
+                if document_context:
+                    document_context += f"\n\n{web_context}"
+                else:
+                    document_context = web_context
+        elif web_search and not query:
+            logger.info(f"Web search requested but no query provided for chat {chat_id} - skipping web search")
+        elif web_search and is_code:
+            logger.info(f"Web search requested but code mode enabled for chat {chat_id} - skipping web search")
+            
+    except Exception as e:
+        logger.error(f"Error retrieving context: {e}")
+    
+    return document_context
+
+def _build_message_content(query: Optional[str], document_context: str, image_contents: List[dict]) -> any:
+    """
+    Build message content combining text and images
+    
+    Returns:
+        Message content (string or list for multimodal)
+    """
+    # Combine query with document context
+    enhanced_query = query or ""
+    if document_context:
+        if query:
+            enhanced_query = f"{query}\n{document_context}"
+        else:
+            enhanced_query = document_context
+    
+    # Handle multimodal content if images are present
+    if image_contents:
+        message_content = []
+        if enhanced_query:
+            message_content.append({"type": "text", "text": enhanced_query})
+        
+        for img in image_contents:
+            message_content.append({
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:{img['content_type']};base64,{img['base64']}"
+                }
+            })
+        return message_content
+    
+    return enhanced_query if enhanced_query else ""
+
 # --- Shared helper functions for queries ---
 
 async def setup_query(
     chat_id: int,
-    query: str,
-    token: str
+    query: Optional[str],
+    token: str,
+    img_json_messages: Optional[List[str]] = None
 ) -> tuple:
     """
     Setup common resources for a query
     
     Args:
         chat_id: Chat identifier
-        query: User's question
+        query: User's question (can be None if only images)
         token: Authentication token
+        img_json_messages: List of image JSON messages
         
     Returns:
         A tuple of (cancel_event, memory, system_prompt)
     """
+    # Ensure we have at least query or images
+    if not query and not img_json_messages:
+        raise HTTPException(status_code=400, detail="Must provide either query text or images")
+    
     async with SessionLocal() as db:
         user = await get_user_from_token(token, db)
         await verify_chat_ownership(chat_id, user.id, db)
-        await save_message(db, chat_id, "user", query)
+        
+        # Save query message if provided
+        if query:
+            await save_message(db, chat_id, "user", query)
+        
+        # Save image messages if provided
+        if img_json_messages:
+            for img_json in img_json_messages:
+                await save_message(db, chat_id, "user", img_json)
+        
         # Load conversation history
         memory = await load_memory(db, chat_id)
         
@@ -372,7 +560,7 @@ async def setup_query(
 @app.post("/start_query_session/{chat_id}")
 async def start_query_session(
     chat_id: int,
-    query: str = Form(...),
+    query: Optional[str] = Form(None),
     images: List[UploadFile] = File(None),
     _: User = Depends(verify_chat_owner()),
 ):
@@ -381,24 +569,28 @@ async def start_query_session(
     
     Args:
         chat_id: Chat identifier
-        query: User's question
+        query: User's question (optional if images are provided)
         images: Optional list of image files to include with the query
         
     Returns:
         Session ID to use with query_chat
     """
+    # Ensure at least query or images are provided
+    if not query and not images:
+        raise HTTPException(status_code=400, detail="Must provide either query text or images")
+    
     # Clean up expired sessions before creating new one
     cleanup_expired_sessions()
     
     session_id = str(uuid.uuid4())
     session_data = {
         "chat_id": chat_id,
-        "query": query,
+        "query": query,  # Keep None if None, don't convert to empty string
         "created_at": time.time(),
         "images": []
     }
     
-    logger.info(f"Creating new session {session_id} for chat {chat_id} with {len(images) if images else 0} images")
+    logger.info(f"Creating new session {session_id} for chat {chat_id} with query='{query}' and {len(images) if images else 0} images")
     
     # Process and store images in session
     if images:
@@ -441,192 +633,84 @@ async def query_chat(
     session_id: Optional[str] = None,
     kb_name: Optional[str] = None,
     deployment_name: Optional[str] = "GPT-4.1",
+    is_code: bool = False,
 ):
     """
-    Process general user queries and stream responses
+    Process user queries and stream responses
     
-    This endpoint requires either a direct query or a session_id from start_query_session.
+    This endpoint handles both general queries and code-specific queries.
+    It requires either a direct query or a session_id from start_query_session.
     For queries with images, first call start_query_session and then use the returned
     session_id with this endpoint.
+    
+    Query Types:
+    - Regular queries (is_code=False): Use document context, knowledge bases, and web search
+    - Code queries (is_code=True): Use code files context, ignore web_search and kb_name
     
     Args:
         chat_id: Chat identifier
         token: Authentication token
-        web_search: Whether to perform web search for up-to-date information
+        web_search: Whether to perform web search for up-to-date information (ignored if is_code=True)
         query: User's question (required if session_id is not provided)
         session_id: Optional session ID from start_query_session (required for image queries)
-        kb_name: Name of knowledge base to query (if None, use document context)
+        kb_name: Name of knowledge base to query (if None, use document context, ignored if is_code=True)
         deployment_name: Name of the model deployment to use (default: GPT-4.1)
+        is_code: Whether this is a code-specific query (uses code context and ignores web_search/kb_name)
         
     Returns:
         Streaming response in SSE (Server-Sent Events) format
     """
-    if False:
-        ### DEBUG
-        await asyncio.sleep(3)
-        async def stream_response1():
-            error_text = "תשובה תשובה תשובה\nשורה 2 שורה 2 שורה 2\nשורה 3 שורה 3 שורה 3"
-            async for chunk in stream_text_as_sse(error_text):
-                yield chunk
-        return StreamingResponse(
-            stream_response1(), 
-            media_type="text/event-stream",
-            background=BackgroundTasks()
-        )
-
-    # Process a user query, either directly or by session_id.
+    
+    # Get query and images from session or direct input
     if session_id:
-        logger.info(f"Processing query with session_id: {session_id} for chat {chat_id}")
-        
-        # Clean up expired sessions first
-        cleanup_expired_sessions()
-        
-        # Retrieve session without removing it yet - will be removed when first data chunk arrives
-        session = pending_queries.get(session_id)
-        if not session:
-            logger.error(f"Session {session_id} not found. Available sessions: {list(pending_queries.keys())}")
-            raise HTTPException(status_code=400, detail="Invalid or expired session_id")
-            
-        # Verify chat_id matches
-        if session["chat_id"] != chat_id:
-            logger.error(f"Chat ID mismatch: session has {session['chat_id']}, request has {chat_id}")
-            raise HTTPException(status_code=400, detail="chat_id mismatch with session_id")
-            
-        # Check if session is expired (additional safety check)
-        current_time = time.time()
-        if current_time - session.get("created_at", 0) > (SESSION_EXPIRY_MINUTES * 60):
-            logger.error(f"Session {session_id} has expired")
-            del pending_queries[session_id]
-            raise HTTPException(status_code=400, detail="Session has expired")
-            
-        query = session["query"]
-        # Get images from session if they exist
-        image_contents = session.get("images", [])
-        logger.info(f"Using session {session_id} with {len(image_contents)} images")
+        query, image_contents = await _get_session_data(session_id, chat_id)
     else:
         if not query:
-            raise HTTPException(status_code=400, detail="Missing query")
+            raise HTTPException(status_code=400, detail="Missing query - provide either query text or use session_id for images")
         image_contents = []
 
-    # Create dedicated DB session and setup resources
-    cancel_event, memory, system_prompt = await setup_query(chat_id, query, token)
+    # Prepare image messages
+    img_json_messages = _prepare_image_messages(image_contents, chat_id)
     
-    # Save images to DB if they were included in the session
-    if image_contents:
-        for img in image_contents:
-            try:
-                # Create JSON structure for image
-                img_json = json.dumps({
-                    "type": "image",
-                    "data": img["base64"],
-                    "format":  img["content_type"]
-                })
-                
-                # Save image as a separate user message
-                async with SessionLocal() as db:
-                    await save_message(db, chat_id, "user", img_json)
-            except Exception as e:
-                logger.error(f"Error saving image message from session: {e}")
+    # Setup query authentication, memory, and save messages
+    cancel_event, memory, system_prompt = await setup_query(
+        chat_id, query, token, img_json_messages if img_json_messages else None
+    )
     
-    # Prepare document context if available
-    document_context = ""
-    try:
-        if kb_name:
-            # Use specified knowledge base
-            logger.info(f"Using knowledge base: {kb_name} for chat {chat_id}")
-            kb_path = os.path.join(KNOWLEDGE_BASE_DIR, kb_name)
-            if os.path.exists(kb_path):
-                kb_rag = DocumentRAG(docs_dir=KNOWLEDGE_BASE_DIR, rag_storage_dir=KNOWLEDGE_BASE_DIR)
-                # Use kb_name as the chat_id for the knowledge base
-                document_context = await kb_rag.get_document_context(kb_name, query, top_k=5)
-                
-                if document_context:
-                    # Prefix to indicate the source of the context
-                    document_context = f"Information from knowledge base '{kb_name}':\n{document_context}"
-                    logger.info(f"Retrieved context from knowledge base {kb_name} for chat {chat_id}")
-                else:
-                    logger.warning(f"No relevant context found in knowledge base {kb_name} for chat {chat_id}")
-            else:
-                logger.warning(f"Knowledge base {kb_name} not found")
-        else:
-            # Use document context from chat's documents
-            doc_rag = get_document_rag(str(chat_id))
-            document_context = await doc_rag.get_document_context(str(chat_id), query, top_k=3)
-            
-            if document_context:
-                logger.info(f"Retrieved context from chat documents for chat {chat_id}")
-                
-        # If web search is requested, get additional context from web
-        if web_search:
-            logger.info(f"Web search requested for chat {chat_id}")
-            # Import here to avoid circular imports
-            from ..query_web import web_search_handler
-            
-            # Pass the database session to allow access to chat history
-            async with SessionLocal() as db:
-                web_context = await web_search_handler.get_document_context(db=db, chat_id=str(chat_id), query=query, top_k=5)
-            
-            if web_context:
-                # Add web search context either on top of document context or as the only context
-                if document_context:
-                    document_context += f"\n\n{web_context}"
-                else:
-                    document_context = web_context
-    except Exception as e:
-        logger.error(f"Error retrieving context: {e}")
+    # Get document context based on query type
+    document_context = await _get_document_context(
+        chat_id, query, is_code, kb_name, web_search
+    )
+    
+    # Build message content combining text and images
+    message_content = _build_message_content(query, document_context, image_contents)
     
     async def stream_response():
-        """Internal function for streaming the response"""
+        """Stream the LLM response"""
         full_response = ""
         start_time = time.time()
         
         try:
-            # Create message chain to send to the LLM
+            # Create conversation with system prompt, history, and user message
             conversation = [SystemMessage(content=system_prompt)] + memory.messages
-            
-            # Process image files if provided in the session
-            # (No need to read files as they're already processed and stored in the session)
-            
-            # Add document context to the query if available
-            enhanced_query = query
-            if document_context:
-                enhanced_query = f"{query}\n{document_context}"
-                
-            # Create the message content with text and images if available
-            message_content = enhanced_query
-            
-            # If we have images from the session, create a multimodal message content
-            if image_contents:
-                message_content = [
-                    {"type": "text", "text": enhanced_query}
-                ]
-                # Add each image as content part
-                for img in image_contents:
-                    message_content.append({
-                        "type": "image_url",
-                        "image_url": {
-                            "url": f"data:{img['content_type']};base64,{img['base64']}"
-                        }
-                    })
-            
-            # Add user message with text and images
             conversation.append(HumanMessage(content=message_content))
             
-            # Use llm_helpers to process langchain messages
+            # Stream response from LLM
             async def message_generator():
                 first_chunk = True
                 async for content in await process_langchain_messages(
                     messages=conversation,
-                    model_config="default",  # Use default model config as base
+                    model_config="default",
                     stream=True,
-                    deployment_name=deployment_name  # Pass the deployment name to the model
+                    deployment_name=deployment_name
                 ):
-                    # Check if the query has been cancelled
+                    # Check for cancellation
                     if should_cancel_query(chat_id):
-                        logger.info(f"Query for chat {chat_id} was cancelled")
+                        query_type = "Code query" if is_code else "Query"
+                        logger.info(f"{query_type} for chat {chat_id} was cancelled")
                         break
                     
-                    # If this is the first chunk, remove session data from pending_queries
+                    # Clean up session on first chunk
                     if first_chunk and session_id and session_id in pending_queries:
                         try:
                             del pending_queries[session_id]
@@ -639,130 +723,34 @@ async def query_chat(
                     full_response += content
                     yield content
             
-            # Use the SSE utility to stream the response
+            # Stream to client
             async for chunk in stream_generator_as_sse(message_generator()):
                 yield chunk
             
-            # After receiving the complete response
+            # Log completion and save response
             elapsed_time = time.time() - start_time
-            logger.info(f"Query processed in {elapsed_time:.2f} seconds")
+            query_type = "Code query" if is_code else "Query"
+            logger.info(f"{query_type} processed in {elapsed_time:.2f} seconds")
             
-            # Skip saving if the query was cancelled or empty response
             if full_response:
                 async with SessionLocal() as db:
                     await save_message(db, chat_id, "assistant", full_response)
             
         except Exception as e:
-            # Handle errors and send them to the user
             logger.error(f"Error in stream_response for chat {chat_id}: {e}")
             error_text = f"[ERROR] {str(e)}"
             async for chunk in stream_text_as_sse(error_text):
                 yield chunk
         finally:
-            # Unregister the query from the active queries
             unregister_active_query(chat_id)
     
-    # Return StreamingResponse object that will stream the response to the user
     return StreamingResponse(
         stream_response(), 
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
-            "X-Accel-Buffering": "no"  # Disable nginx buffering
-        },
-        background=BackgroundTasks()
-    )
-
-@app.get("/query_code/")
-async def query_code(
-    chat_id: int, 
-    query: str, 
-    token: str,
-    deployment_name: Optional[str] = "GPT-4.1"
-):
-    """
-    Process code-specific queries by including all code files in the prompt
-    
-    Args:
-        chat_id: Chat identifier
-        query: User's question
-        token: Authentication token
-        deployment_name: Name of the model deployment to use (default: GPT-4.1)
-        
-    Returns:
-        Streaming response in SSE (Server-Sent Events) format
-    """
-    # Setup common resources
-    cancel_event, memory, system_prompt = await setup_query(chat_id, query, token)
-    
-    # Get code context from the external module
-    code_context = get_code_context(chat_id)
-    
-    async def stream_response():
-        """Internal function for streaming the response"""
-        full_response = ""
-        start_time = time.time()
-        
-        try:
-            # Create message chain to send to the LLM
-            conversation = [SystemMessage(content=system_prompt)] + memory.messages
-            
-            # Add user query with code context
-            if code_context:
-                enhanced_query = f"{query}\n{code_context}"
-                conversation.append(HumanMessage(content=enhanced_query))
-            else:
-                conversation.append(HumanMessage(content=query))
-
-            # Use llm_helpers to process langchain messages with code-specific configuration
-            async def message_generator():
-                async for content in await process_langchain_messages(
-                    messages=conversation,
-                    model_config="code",  # Use code-specific model configuration
-                    stream=True,
-                    deployment_name=deployment_name  # Pass the deployment name to the model
-                ):
-                    # Check if the query has been cancelled
-                    if should_cancel_query(chat_id):
-                        print(f"Code query for chat {chat_id} was cancelled")
-                        break
-                    
-                    nonlocal full_response
-                    full_response += content
-                    yield content
-            
-            # Use the SSE utility to stream the response
-            async for chunk in stream_generator_as_sse(message_generator()):
-                yield chunk
-            
-            # After receiving the complete response
-            elapsed_time = time.time() - start_time
-            print(f"Code query processed in {elapsed_time:.2f} seconds")
-            
-            # Skip saving if the query was cancelled or empty response
-            if full_response:
-                async with SessionLocal() as db:
-                    await save_message(db, chat_id, "assistant", full_response)
-            
-        except Exception as e:
-            # Handle errors and send them to the user
-            print(f"Error in stream_response for chat {chat_id}: {e}")
-            error_text = f"[ERROR] {str(e)}"
-            async for chunk in stream_text_as_sse(error_text):
-                yield chunk
-        finally:
-            # Unregister the query from the active queries
-            unregister_active_query(chat_id)
-    
-    # Return StreamingResponse object that will stream the response to the user
-    return StreamingResponse(
-        stream_response(), 
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no"  # Disable nginx buffering
+            "X-Accel-Buffering": "no"
         },
         background=BackgroundTasks()
     )
