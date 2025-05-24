@@ -572,7 +572,6 @@ class DocumentRAG:
         
         # Check if RAG folder exists first
         if not await aiofiles.ospath.exists(rag_folder):
-            logger.info(f"No RAG storage folder found for chat {chat_id}")
             return []
         
         index_file = os.path.join(rag_folder, "document_index.pkl")
@@ -627,36 +626,18 @@ class DocumentRAG:
             Document context as string or empty string if no relevant context found
         """
         try:
-            rag_folder = self._get_rag_storage_folder(str(chat_id))
+            # Retrieve relevant documents (handles all existence checks internally)
+            relevant_docs = await self.retrieve_relevant_documents(str(chat_id), query, top_k=top_k)
             
-            # Check if the folder exists before proceeding
-            if not await aiofiles.ospath.exists(rag_folder):
-                logger.info(f"No RAG storage folder found for chat {chat_id}")
-                return ""
+            if relevant_docs:
+                # Format the document context in a useful way
+                context = "\n\nRelevant document information:\n" + "\n\n".join([
+                    f"From document '{doc.metadata.get('file_name', 'unknown')}':\n{doc.page_content}"
+                    for doc in relevant_docs
+                ])
                 
-            index_file = os.path.join(rag_folder, "document_index.pkl")
-            faiss_index_file = os.path.join(rag_folder, "document_faiss.index")
-            
-            # Check if index exists using aiofiles for non-blocking I/O
-            if (await aiofiles.ospath.exists(index_file) and 
-                await aiofiles.ospath.exists(faiss_index_file)):
-                
-                # Retrieve relevant documents
-                relevant_docs = await self.retrieve_relevant_documents(str(chat_id), query, top_k=top_k)
-                
-                if relevant_docs:
-                    # Format the document context in a useful way
-                    context = "\n\nRelevant document information:\n" + "\n\n".join([
-                        f"From document '{doc.metadata.get('file_name', 'unknown')}':\n{doc.page_content}"
-                        for doc in relevant_docs
-                    ])
-                    
-                    logger.info(f"Retrieved context from {len(relevant_docs)} document chunks for query in chat {chat_id}")
-                    return context
-                else:
-                    logger.info(f"No relevant document chunks found for query in chat {chat_id}")
-            else:
-                logger.info(f"No document index found for chat {chat_id}")
+                logger.info(f"Retrieved context from {len(relevant_docs)} document chunks for query in chat {chat_id}")
+                return context
         except Exception as e:
             logger.error(f"Error retrieving document context for chat {chat_id}: {e}")
         
