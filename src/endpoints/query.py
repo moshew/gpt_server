@@ -116,58 +116,6 @@ def unregister_active_query(chat_id):
     if chat_id_str in active_queries:
         del active_queries[chat_id_str]
 
-def cleanup_expired_sessions():
-    """Clean up expired sessions from pending_queries"""
-    global pending_queries
-    
-    current_time = time.time()
-    expired_sessions = []
-    
-    for session_id, session_data in pending_queries.items():
-        age_seconds = current_time - session_data.get("created_at", 0)
-        # Check if session is older than expiry time
-        if age_seconds > (SESSION_EXPIRY_MINUTES * 60):
-            expired_sessions.append(session_id)
-    
-    # Remove expired sessions
-    for session_id in expired_sessions:
-        logger.info(f"Removing expired session: {session_id}")
-        del pending_queries[session_id]
-    
-    if expired_sessions:
-        logger.info(f"Cleaned up {len(expired_sessions)} expired sessions")
-
-async def cleanup_stale_active_queries():
-    """
-    Periodically clean up stale active queries and expired sessions
-    
-    This function removes queries that have been active for too long,
-    which could indicate they were never properly unregistered.
-    """
-    global active_queries
-    
-    try:
-        # Clean up expired sessions first
-        cleanup_expired_sessions()
-        
-        current_time = asyncio.get_event_loop().time()
-        stale_threshold = 3600  # 1 hour in seconds
-        
-        # Find queries that have been active for too long
-        stale_queries = []
-        for chat_id, query_info in active_queries.items():
-            if current_time - query_info.get("timestamp", 0) > stale_threshold:
-                stale_queries.append(chat_id)
-        
-        # Remove stale queries
-        for chat_id in stale_queries:
-            logger.info(f"Cleaning up stale query for chat {chat_id}")
-            del active_queries[chat_id]
-            
-        logger.info(f"Cleaned up {len(stale_queries)} stale queries. {len(active_queries)} active queries remaining.")
-    except Exception as e:
-        logger.error(f"Error during active query cleanup: {e}")
-
 async def load_memory(db: AsyncSession, chat_id: int):
     """
     Load conversation history from the database
@@ -278,19 +226,6 @@ async def save_message(db: AsyncSession, chat_id: int, sender: str, content: str
     except Exception as e:
         logger.error(f"Error saving message: {e}")
             
-# Schedule periodic cleanup at application startup
-@app.on_event("startup")
-async def schedule_active_query_cleanup():
-    """Schedule periodic cleanup of stale active queries"""
-    async def cleanup_task():
-        while True:
-            await cleanup_stale_active_queries()
-            # Run every 5 minutes (more frequent cleanup)
-            await asyncio.sleep(300)
-    
-    # Start the cleanup task in the background
-    asyncio.create_task(cleanup_task())
-
 # Endpoint to stop an active query
 @app.post("/stop_query/{chat_id}")
 async def stop_query(
@@ -356,7 +291,6 @@ async def _get_session_data(session_id: str, chat_id: int) -> tuple[Optional[str
     session = pending_queries.get(session_id)
     if not session:
         # Only clean up if session not found - might be expired
-        cleanup_expired_sessions()
         logger.error(f"Session {session_id} not found. Available sessions: {list(pending_queries.keys())}")
         raise HTTPException(status_code=400, detail="Invalid or expired session_id")
         
@@ -582,9 +516,6 @@ async def start_query_session(
     # Ensure at least query or images are provided
     if not query and not images:
         raise HTTPException(status_code=400, detail="Must provide either query text or images")
-    
-    # Clean up expired sessions before creating new one
-    cleanup_expired_sessions()
     
     session_id = str(uuid.uuid4())
     session_data = {
