@@ -30,8 +30,8 @@ class NoChunkDocumentRAG:
     
     def __init__(self, docs_dir: str, rag_storage_dir: str):
         try:
-            rag_documents = importlib.import_module('rag_documents')
-            DocumentRAG = getattr(rag_documents, 'DocumentRAG')
+            query_docs = importlib.import_module('query_docs')
+            DocumentRAG = getattr(query_docs, 'DocumentRAG')
             self.document_rag = DocumentRAG(docs_dir=docs_dir, rag_storage_dir=rag_storage_dir)
             logger.info(f"Initialized NoChunkDocumentRAG wrapper with docs_dir={docs_dir}, rag_storage_dir={rag_storage_dir}")
         except (ImportError, AttributeError) as e:

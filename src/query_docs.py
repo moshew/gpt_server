@@ -42,12 +42,15 @@ import aiofiles
 import aiofiles.os
 import aiofiles.ospath
 
+# Define path for knowledge bases
+KNOWLEDGE_BASE_DIR = os.environ.get("KNOWLEDGE_BASE_DIR", "data/knowledgebase")
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
-logger = logging.getLogger("rag_documents")
+logger = logging.getLogger("query_docs")
 
 # Define embedding model constants
 EMBEDDING_MODEL = "text-embedding-3-large"  # The embedding model we're using
@@ -650,3 +653,174 @@ document_rag_handler = DocumentRAG(docs_dir="data/chats", rag_storage_dir="data/
 def get_document_rag(chat_id: str) -> DocumentRAG:
     """Get DocumentRAG instance for a specific chat"""
     return document_rag_handler
+
+async def get_document_context(
+    chat_id: str, 
+    query: Optional[str] = None, 
+    top_k: int = 3, 
+    keep_original_files: bool = False,
+    source_type: str = "chat"  # "chat", "kb", or "code"
+) -> str:
+    """
+    Get document context for a query, either using RAG or returning original files
+    
+    Args:
+        chat_id: Chat identifier (or knowledge base name for KB queries)
+        query: Query text (required for RAG, optional for original files)
+        top_k: Number of top chunks to retrieve (for RAG only)
+        keep_original_files: Whether to return original file contents instead of RAG
+        source_type: Type of source - "chat", "kb", or "code"
+        
+    Returns:
+        Document context string
+    """
+    if keep_original_files:
+        return await _get_original_files_content(chat_id, source_type)
+    else:
+        # Use RAG
+        if not query:
+            return ""
+            
+        if source_type == "kb":
+            # Knowledge base RAG
+            kb_path = os.path.join(KNOWLEDGE_BASE_DIR, chat_id)
+            if os.path.exists(kb_path):
+                kb_rag = DocumentRAG(docs_dir=KNOWLEDGE_BASE_DIR, rag_storage_dir=KNOWLEDGE_BASE_DIR)
+                context = await kb_rag.get_document_context(chat_id, query, top_k=5)
+                if context:
+                    return f"Information from knowledge base '{chat_id}':\n{context}"
+            return ""
+        else:
+            # Chat documents RAG
+            doc_rag = get_document_rag(str(chat_id))
+            context = await doc_rag.get_document_context(str(chat_id), query, top_k=top_k)
+            return context or ""
+
+async def _get_original_files_content(chat_id: str, source_type: str) -> str:
+    """
+    Read original file contents instead of using RAG
+    
+    Args:
+        chat_id: Chat identifier (or knowledge base name for KB queries)
+        source_type: Type of source - "chat", "kb", or "code"
+        
+    Returns:
+        Combined file contents
+        
+    Raises:
+        HTTPException: If total word count exceeds 100K words
+    """
+    MAX_WORDS = 100000  # 100K words limit
+    
+    # Determine source directory based on type
+    if source_type == "kb":
+        docs_dir = os.path.join(KNOWLEDGE_BASE_DIR, chat_id)
+        source_description = f"knowledge base '{chat_id}'"
+    elif source_type == "code":
+        docs_dir = f"data/code/{chat_id}"
+        source_description = f"code files for chat {chat_id}"
+    else:  # chat
+        docs_dir = f"data/chats/chat_{chat_id}"
+        source_description = f"chat {chat_id} documents"
+    
+    all_content = []
+    total_words = 0
+    
+    try:
+        logger.info(f"Reading original files from {docs_dir} for {source_description}")
+        
+        if not os.path.exists(docs_dir):
+            logger.info(f"Directory {docs_dir} does not exist")
+            return ""
+        
+        # Supported file extensions
+        supported_extensions = {
+            '.txt', '.md', '.py', '.js', '.html', '.css', '.json', 
+            '.yaml', '.yml', '.xml', '.csv', '.pdf', '.docx', '.doc'
+        }
+        
+        for root, dirs, files in os.walk(docs_dir):
+            for file in files:
+                file_path = os.path.join(root, file)
+                file_ext = os.path.splitext(file)[1].lower()
+                
+                # Skip unsupported file types
+                if file_ext not in supported_extensions:
+                    continue
+                
+                try:
+                    # Read file content based on type
+                    if file_ext == '.pdf':
+                        content = await _read_pdf_content(file_path)
+                    elif file_ext in ['.docx', '.doc']:
+                        content = await _read_docx_content(file_path)
+                    else:
+                        # Text-based files
+                        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                            content = f.read()
+                    
+                    if not content.strip():
+                        continue
+                    
+                    # Count words in this file
+                    word_count = len(content.split())
+                    
+                    # Check if adding this file would exceed limit
+                    if total_words + word_count > MAX_WORDS:
+                        logger.warning(f"File content exceeds 100K words limit. Current: {total_words}, File: {word_count}")
+                        raise HTTPException(
+                            status_code=400, 
+                            detail=f"File contents are too large ({total_words + word_count:,} words). "
+                                   f"Maximum allowed is {MAX_WORDS:,} words. "
+                                   f"Consider unchecking 'keep original files' to use document excerpts instead."
+                        )
+                    
+                    # Add file content with header
+                    relative_path = os.path.relpath(file_path, docs_dir)
+                    file_header = f"\n--- File: {relative_path} ---\n"
+                    all_content.append(file_header + content)
+                    total_words += word_count
+                    
+                    logger.info(f"Added file {relative_path}: {word_count} words (total: {total_words})")
+                    
+                except Exception as e:
+                    logger.warning(f"Could not read file {file_path}: {e}")
+                    continue
+        
+        if not all_content:
+            logger.info(f"No supported files found in {docs_dir}")
+            return ""
+        
+        combined_content = "\n".join(all_content)
+        logger.info(f"Combined {len(all_content)} files from {source_description}: {total_words} words total")
+        
+        return f"Original file contents from {source_description}:\n{combined_content}"
+        
+    except HTTPException:
+        # Re-raise HTTP exceptions (word limit exceeded)
+        raise
+    except Exception as e:
+        logger.error(f"Error reading original files from {docs_dir}: {e}")
+        return ""
+
+async def _read_pdf_content(file_path: str) -> str:
+    """Read content from PDF file"""
+    try:
+        from langchain_community.document_loaders import PyPDFLoader
+        loader = PyPDFLoader(file_path)
+        docs = await run_in_executor(loader.load)
+        return "\n".join([doc.page_content for doc in docs])
+    except Exception as e:
+        logger.error(f"Error reading PDF {file_path}: {e}")
+        return ""
+
+async def _read_docx_content(file_path: str) -> str:
+    """Read content from DOCX file"""
+    try:
+        from langchain_community.document_loaders import UnstructuredWordDocumentLoader
+        loader = UnstructuredWordDocumentLoader(file_path)
+        docs = await run_in_executor(loader.load)
+        return "\n".join([doc.page_content for doc in docs])
+    except Exception as e:
+        logger.error(f"Error reading DOCX {file_path}: {e}")
+        return ""

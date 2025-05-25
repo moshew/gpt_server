@@ -33,8 +33,8 @@ from ..auth import get_user_from_token, verify_chat_owner, verify_chat_ownership
 from ..database import SessionLocal
 from ..utils import process_langchain_messages
 from ..utils.sse import stream_text_as_sse, stream_generator_as_sse
-from ..rag_documents import get_document_rag, DocumentRAG
-from ..image_service import get_image_service
+from ..query_docs import get_document_context
+from ..query_images import get_image_service
 from ..query_web import web_search_handler
 from ..query_code import get_code_context
 
@@ -45,8 +45,6 @@ pending_queries = {}
 # Session cleanup settings
 SESSION_EXPIRY_MINUTES = 30  # Sessions expire after 30 minutes
 
-# Define path for knowledge bases
-KNOWLEDGE_BASE_DIR = os.environ.get("KNOWLEDGE_BASE_DIR", "data/knowledgebase")
 CONTENT_TYPE_TO_EXT = {
     "image/png": "png",
     "image/gif": "gif",
@@ -407,12 +405,33 @@ def _prepare_image_messages(image_contents: List[dict], chat_id: int) -> List[st
     
     return img_json_messages
 
+def _parse_source(source: Optional[str]) -> tuple[bool, Optional[str], bool]:
+    """
+    Parse source parameter into component flags
+    
+    Args:
+        source: Source string (None, "code", "web", "kb.<name>")
+        
+    Returns:
+        tuple of (is_code, kb_name, web_search)
+    """
+    if source == "code":
+        return True, None, False
+    elif source == "web":
+        return False, None, True
+    elif source and source.startswith("kb."):
+        kb_name = source[3:]  # Remove "kb." prefix
+        return False, kb_name if kb_name else None, False
+    else:  # None or any other value defaults to standard document mode
+        return False, None, False
+
 async def _get_document_context(
     chat_id: int, 
     query: Optional[str], 
     is_code: bool, 
     kb_name: Optional[str], 
-    web_search: bool
+    web_search: bool,
+    keep_original_files: bool
 ) -> str:
     """
     Get document context based on query type and parameters
@@ -427,41 +446,23 @@ async def _get_document_context(
             # Use code context for code-specific queries
             logger.info(f"Using code context for chat {chat_id}")
             code_context = get_code_context(chat_id)
-            if code_context:
-                document_context = code_context
-                logger.info(f"Retrieved code context for chat {chat_id}")
-            else:
-                logger.info(f"No code context available for chat {chat_id}")
+            document_context = code_context if code_context else ""
                 
         elif kb_name:
             # Use specified knowledge base
             logger.info(f"Using knowledge base: {kb_name} for chat {chat_id}")
-            kb_path = os.path.join(KNOWLEDGE_BASE_DIR, kb_name)
-            if os.path.exists(kb_path) and query:  # KB requires query
-                kb_rag = DocumentRAG(docs_dir=KNOWLEDGE_BASE_DIR, rag_storage_dir=KNOWLEDGE_BASE_DIR)
-                document_context = await kb_rag.get_document_context(kb_name, query, top_k=5)
-                
-                if document_context:
-                    document_context = f"Information from knowledge base '{kb_name}':\n{document_context}"
-                    logger.info(f"Retrieved context from knowledge base {kb_name} for chat {chat_id}")
-                else:
-                    logger.warning(f"No relevant context found in knowledge base {kb_name} for chat {chat_id}")
-            else:
-                logger.warning(f"Knowledge base {kb_name} not found or no query provided")
-                
+            document_context = await get_document_context(
+                kb_name, query, top_k=5, keep_original_files=False, source_type="kb"
+            )
+            
         else:
-            # Use document context from chat's documents (only if we have a query)
-            if query:
-                doc_rag = get_document_rag(str(chat_id))
-                document_context = await doc_rag.get_document_context(str(chat_id), query, top_k=3)
-                
-                if document_context:
-                    logger.info(f"Retrieved context from chat documents for chat {chat_id}")
-            else:
-                logger.info(f"No query provided for document RAG for chat {chat_id} - skipping document context")
-        
-        # Add web search context if requested (not for code queries)
-        if web_search and query and not is_code:
+            # Use document context from chat's documents
+            document_context = await get_document_context(
+                str(chat_id), query, top_k=3, keep_original_files=keep_original_files
+            )
+            
+        # Add web search context if requested (not for code queries or original files)
+        if web_search and query and not is_code and not keep_original_files:
             logger.info(f"Web search requested for chat {chat_id}")
             from ..query_web import web_search_handler
             
@@ -475,13 +476,12 @@ async def _get_document_context(
                     document_context += f"\n\n{web_context}"
                 else:
                     document_context = web_context
-        elif web_search and not query:
-            logger.info(f"Web search requested but no query provided for chat {chat_id} - skipping web search")
-        elif web_search and is_code:
-            logger.info(f"Web search requested but code mode enabled for chat {chat_id} - skipping web search")
             
     except Exception as e:
         logger.error(f"Error retrieving context: {e}")
+        # Re-raise HTTP exceptions (like word limit exceeded)
+        if isinstance(e, HTTPException):
+            raise
     
     return document_context
 
@@ -632,12 +632,11 @@ async def start_query_session(
 async def query_chat(
     chat_id: int,
     token: str,
-    web_search: bool = False,
     query: Optional[str] = None,
     session_id: Optional[str] = None,
-    kb_name: Optional[str] = None,
     deployment_name: Optional[str] = "GPT-4.1",
-    is_code: bool = False,
+    keep_original_files: bool = False,
+    source: Optional[str] = None,  # None (default), "code", "web", "kb.<name>"
 ):
     """
     Process user queries and stream responses
@@ -647,19 +646,26 @@ async def query_chat(
     For queries with images, first call start_query_session and then use the returned
     session_id with this endpoint.
     
-    Query Types:
-    - Regular queries (is_code=False): Use document context, knowledge bases, and web search
-    - Code queries (is_code=True): Use code files context, ignore web_search and kb_name
+    Source Types:
+    - None (default): Use document context from chat documents
+    - "code": Use code files context 
+    - "web": Use web search for up-to-date information
+    - "kb.<name>": Use specific knowledge base (e.g., "kb.confluence")
+    
+    Examples:
+        /query/?chat_id=1&query=hello                        # Default documents (no source)
+        /query/?chat_id=1&query=fix bug&source=code          # Code analysis
+        /query/?chat_id=1&query=latest news&source=web       # Web search
+        /query/?chat_id=1&query=policy&source=kb.confluence  # Knowledge base
     
     Args:
         chat_id: Chat identifier
         token: Authentication token
-        web_search: Whether to perform web search for up-to-date information (ignored if is_code=True)
         query: User's question (required if session_id is not provided)
         session_id: Optional session ID from start_query_session (required for image queries)
-        kb_name: Name of knowledge base to query (if None, use document context, ignored if is_code=True)
         deployment_name: Name of the model deployment to use (default: GPT-4.1)
-        is_code: Whether this is a code-specific query (uses code context and ignores web_search/kb_name)
+        keep_original_files: Whether to send original file contents instead of RAG excerpts (may hit token limits)
+        source: Context source type - None (default), "code", "web", or "kb.<name>"
         
     Returns:
         Streaming response in SSE (Server-Sent Events) format
@@ -682,8 +688,9 @@ async def query_chat(
     )
     
     # Get document context based on query type
+    is_code, kb_name, web_search = _parse_source(source)
     document_context = await _get_document_context(
-        chat_id, query, is_code, kb_name, web_search
+        chat_id, query, is_code, kb_name, web_search, keep_original_files
     )
     
     # Build message content combining text and images

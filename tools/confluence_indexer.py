@@ -38,7 +38,7 @@ from utils import (
 )
 
 # Import DocumentRAG for index creation
-from rag_documents import DocumentRAG
+from query_docs import DocumentRAG
 
 # Import our custom no-chunk wrapper
 # Make sure to place the no_chunk_rag.py file in the same directory

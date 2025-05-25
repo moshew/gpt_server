@@ -153,7 +153,7 @@ async def startup_event():
     #app.state.code_analyzer = CodeAnalysisHandler(chats_dir="chats")
     
     # Import document_rag after FastAPI app is created to avoid circular imports
-    from .rag_documents import document_rag_handler
+    from .query_docs import document_rag_handler
     
     # Store document RAG handler in app state
     app.state.document_rag_handler = document_rag_handler

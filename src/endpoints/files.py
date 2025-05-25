@@ -20,7 +20,7 @@ from ..database import User, File as DBFile, SessionLocal
 
 from ..app_init import app
 from ..auth import verify_chat_owner
-from ..rag_documents import get_document_rag
+from ..query_docs import get_document_rag
 from ..utils.async_helpers import run_in_executor
 
 # Semaphore to limit concurrent extraction processes

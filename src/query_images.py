@@ -1,8 +1,8 @@
 """
-Image Generation Service
+Image Query Processing Module
 
 This module provides functionality for image generation and variation
-through DALL-E 3.
+through DALL-E 3 as part of the query processing system.
 """
 
 import os
