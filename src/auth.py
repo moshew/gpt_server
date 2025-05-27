@@ -17,7 +17,7 @@ import json
 from datetime import datetime, timedelta
 from urllib.parse import urlencode
 
-import httpx
+import requests
 from fastapi import Depends, HTTPException, Request
 from fastapi.responses import RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -76,35 +76,34 @@ async def exchange_code_for_token(code: str) -> Dict[str, Any]:
     }
     
     try:
-        async with httpx.AsyncClient() as client:
-            response = await client.post(MS_TOKEN_URL, data=data)
-            response.raise_for_status()
-            token_data = response.json()
-            
-            # Get user information from Microsoft Graph
-            user_info = await get_user_info(token_data["access_token"])
-            
-            # Cache the token
-            if "email" in user_info:
-                ms_token_cache[user_info["email"]] = {
-                    "access_token": token_data["access_token"],
-                    "refresh_token": token_data.get("refresh_token"),
-                    "expires_at": datetime.now() + timedelta(seconds=token_data["expires_in"])
-                }
-            
-            return {
+        response = requests.post(MS_TOKEN_URL, data=data)
+        response.raise_for_status()
+        token_data = response.json()
+        
+        # Get user information from Microsoft Graph
+        user_info = get_user_info(token_data["access_token"])
+        
+        # Cache the token
+        if "email" in user_info:
+            ms_token_cache[user_info["email"]] = {
                 "access_token": token_data["access_token"],
-                "id_token": token_data.get("id_token"),
-                "user_info": user_info
+                "refresh_token": token_data.get("refresh_token"),
+                "expires_at": datetime.now() + timedelta(seconds=token_data["expires_in"])
             }
-    except httpx.HTTPStatusError as e:
+        
+        return {
+            "access_token": token_data["access_token"],
+            "id_token": token_data.get("id_token"),
+            "user_info": user_info
+        }
+    except requests.HTTPError as e:
         print(f"Error exchanging code for token: {e.response.text}")
         raise HTTPException(status_code=400, detail=f"Failed to exchange code: {str(e)}")
     except Exception as e:
         print(f"Error in token exchange: {e}")
         raise HTTPException(status_code=500, detail=f"Token exchange error: {str(e)}")
 
-async def get_user_info(access_token: str) -> Dict[str, Any]:
+def get_user_info(access_token: str) -> Dict[str, Any]:
     """
     Get user information from Microsoft Graph API
     
@@ -115,19 +114,18 @@ async def get_user_info(access_token: str) -> Dict[str, Any]:
         User profile information from Microsoft
     """
     try:
-        async with httpx.AsyncClient() as client:
-            headers = {"Authorization": f"Bearer {access_token}"}
-            response = await client.get(MS_GRAPH_URL, headers=headers)
-            response.raise_for_status()
-            return response.json()
-    except httpx.HTTPStatusError as e:
+        headers = {"Authorization": f"Bearer {access_token}"}
+        response = requests.get(MS_GRAPH_URL, headers=headers)
+        response.raise_for_status()
+        return response.json()
+    except requests.HTTPError as e:
         print(f"Error getting user info: {e.response.text}")
         raise HTTPException(status_code=401, detail="Invalid Microsoft token")
     except Exception as e:
         print(f"Error in get_user_info: {e}")
         raise HTTPException(status_code=500, detail=f"Error getting user information: {str(e)}")
 
-async def refresh_microsoft_token(refresh_token: str) -> Dict[str, Any]:
+def refresh_microsoft_token(refresh_token: str) -> Dict[str, Any]:
     """
     Refresh Microsoft access token
     
@@ -147,10 +145,9 @@ async def refresh_microsoft_token(refresh_token: str) -> Dict[str, Any]:
     }
     
     try:
-        async with httpx.AsyncClient() as client:
-            response = await client.post(MS_TOKEN_URL, data=data)
-            response.raise_for_status()
-            return response.json()
+        response = requests.post(MS_TOKEN_URL, data=data)
+        response.raise_for_status()
+        return response.json()
     except Exception as e:
         print(f"Error refreshing Microsoft token: {e}")
         raise HTTPException(status_code=401, detail="Failed to refresh token")
