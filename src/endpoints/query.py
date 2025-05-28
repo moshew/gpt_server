@@ -626,10 +626,12 @@ async def query_chat(
     
     # Build message content combining text and images
     message_content = _build_message_content(query, document_context, image_contents)
+
+    # Variable to store the complete response for saving
+    complete_response = {"content": ""}
     
     async def stream_response():
         """Stream the LLM response"""
-        full_response = ""
         start_time = time.time()
         
         try:
@@ -661,29 +663,35 @@ async def query_chat(
                             logger.warning(f"Session {session_id} was already removed from pending_queries")
                         first_chunk = False
                     
-                    nonlocal full_response
-                    full_response += content
+                    # Accumulate response content
+                    complete_response["content"] += content
                     yield content
             
             # Stream to client
             async for chunk in stream_generator_as_sse(message_generator()):
                 yield chunk
             
-            # Log completion and save response
+            # Log completion
             elapsed_time = time.time() - start_time
             query_type = "Code query" if is_code else "Query"
             logger.info(f"{query_type} processed in {elapsed_time:.2f} seconds")
             
-            if full_response:
-                async with SessionLocal() as db:
-                    await save_message(db, chat_id, "assistant", full_response)
-            
         except Exception as e:
             logger.error(f"Error in stream_response for chat {chat_id}: {e}")
             error_text = f"[ERROR] {str(e)}"
+            complete_response["content"] = error_text  # Save error as well
             async for chunk in stream_text_as_sse(error_text):
                 yield chunk
         finally:
+            # Always save the response, regardless of how the stream ended
+            if complete_response["content"]:
+                try:
+                    async with SessionLocal() as db:
+                        await save_message(db, chat_id, "assistant", complete_response["content"])
+                        logger.info(f"Assistant response saved successfully for chat {chat_id}")
+                except Exception as save_error:
+                    logger.error(f"Failed to save assistant response for chat {chat_id}: {save_error}")
+            
             unregister_active_query(chat_id)
     
     return StreamingResponse(
@@ -693,8 +701,7 @@ async def query_chat(
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no"
-        },
-        background=BackgroundTasks()
+        }
     )
 
 @app.post("/query_image/{chat_id}")
@@ -725,6 +732,7 @@ async def query_image(
     Returns:
         Image metadata and chat message information
     """
+    result = None
     try:
         # Authentication and authorization
         async with SessionLocal() as db:
@@ -762,9 +770,6 @@ async def query_image(
         active_queries[str(chat_id)]["task"] = generation_task
         
         # Wait for either task completion or cancellation
-        done = False
-        result = None
-        
         while True:
             # Check if the operation should be cancelled
             if should_cancel_query(chat_id):
@@ -787,33 +792,33 @@ async def query_image(
             
             await asyncio.sleep(0.1)
 
-        # Unregister the query since it's complete
-        unregister_active_query(chat_id)
-        
-        # Save the assistant message
-        if result:
-            # Use create_save_response_task to ensure proper order
-            message_content = json.dumps({"type": "image", "filename": result.get('filename', ''), "url": result.get('url', ''), "created": result.get('created', '')}) if "error" not in result else result["error"]
-            
-            # Use the same function as other endpoints
-            async with SessionLocal() as db:
-                await save_message(db, chat_id, "assistant", message_content)
-
         # Return response
         return result
         
     except Exception as e:
-        # Make sure to unregister the query if there was an error
+        error_message = f"Error processing image for chat: {str(e)}"
+        result = {"error": error_message}
+        return JSONResponse(
+            status_code=500,
+            content=result
+        )
+    finally:
+        # Always save the assistant message and unregister query
+        try:
+            if result:
+                message_content = json.dumps({"type": "image", "filename": result.get('filename', ''), "url": result.get('url', ''), "created": result.get('created', '')}) if "error" not in result else result["error"]
+                
+                async with SessionLocal() as db:
+                    await save_message(db, chat_id, "assistant", message_content)
+                    logger.info(f"Assistant image response saved successfully for chat {chat_id}")
+        except Exception as save_error:
+            logger.error(f"Failed to save assistant image response for chat {chat_id}: {save_error}")
+        
+        # Always unregister the query
         try:
             unregister_active_query(chat_id)
         except:
             pass
-            
-        error_message = f"Error processing image for chat: {str(e)}"
-        return JSONResponse(
-            status_code=500,
-            content={"error": error_message}
-        )
 
 # Endpoint to get available models
 @app.get("/query/available_models")
