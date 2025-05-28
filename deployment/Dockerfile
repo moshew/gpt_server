@@ -1,6 +1,6 @@
 FROM python:3.10-slim
 
-WORKDIR /app
+WORKDIR /ElbitGPT
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
@@ -16,7 +16,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # Set Python path to include src directory
-ENV PYTHONPATH="/app/src:/app"
+ENV PYTHONPATH="/ElbitGPT/src:/ElbitGPT"
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
