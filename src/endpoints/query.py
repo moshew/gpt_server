@@ -33,7 +33,7 @@ from ..auth import get_user_from_token, verify_chat_owner, verify_chat_ownership
 from ..database import SessionLocal
 from ..utils import process_langchain_messages
 from ..utils.sse import stream_text_as_sse, stream_generator_as_sse
-from ..query_docs import get_document_context
+from ..query_docs import get_document_context, get_document_rag
 from ..query_images import get_image_service
 from ..query_web import web_search_handler
 from ..query_code import get_code_context
@@ -225,7 +225,41 @@ async def save_message(db: AsyncSession, chat_id: int, sender: str, content: str
         await db.commit()
     except Exception as e:
         logger.error(f"Error saving message: {e}")
+
+async def perform_indexing_with_progress(doc_rag: 'DocumentRAG', chat_id: str):
+    """
+    Perform indexing with progress updates via SSE
+    
+    Args:
+        doc_rag: DocumentRAG instance
+        chat_id: Chat identifier
+        
+    Yields:
+        SSE formatted progress messages
+    """
+    try:
+        # Send start indexing message
+        start_message = "###PROC_INFO: Indexing uploaded documents...###"
+        async for chunk in stream_text_as_sse(start_message):
+            yield chunk
+        
+        # Perform actual indexing
+        result = await doc_rag.index_documents(chat_id)
+        
+        logger.info(f"Indexing completed for chat {chat_id}: {result}")
+        
+        # Send completion message (clear the processing info)
+        end_message = "###PROC_INFO:###"
+        async for chunk in stream_text_as_sse(end_message):
+            yield chunk
             
+    except Exception as e:
+        logger.error(f"Error during indexing for chat {chat_id}: {e}")
+        # Send error completion message
+        error_message = "###PROC_INFO:###"
+        async for chunk in stream_text_as_sse(error_message):
+            yield chunk
+
 # Endpoint to stop an active query
 @app.post("/stop_query/{chat_id}")
 async def stop_query(
@@ -398,8 +432,6 @@ async def _get_document_context(
         # Add web search context if requested (not for code queries or original files)
         if web_search and query and not is_code and not keep_original_files:
             logger.info(f"Web search requested for chat {chat_id}")
-            from ..query_web import web_search_handler
-            
             async with SessionLocal() as db:
                 web_context = await web_search_handler.get_document_context(
                     db=db, chat_id=str(chat_id), query=query, top_k=5
@@ -577,8 +609,11 @@ async def query_chat(
     For queries with images, first call start_query_session and then use the returned
     session_id with this endpoint.
     
+    For chat documents (source=None), the function automatically checks if indexing
+    is needed and performs it with progress updates via SSE before processing the query.
+    
     Source Types:
-    - None (default): Use document context from chat documents
+    - None (default): Use document context from chat documents (auto-indexes if needed)
     - "code": Use code files context 
     - "web": Use web search for up-to-date information
     - "kb.<name>": Use specific knowledge base (e.g., "kb.confluence")
@@ -600,6 +635,9 @@ async def query_chat(
         
     Returns:
         Streaming response in SSE (Server-Sent Events) format
+        Special SSE messages during indexing (source=None only):
+        - ###PROC_INFO: Indexing uploaded documents...### (start)
+        - ###PROC_INFO:### (completion)
     """
     
     # Get query and images from session or direct input
@@ -618,15 +656,6 @@ async def query_chat(
         chat_id, query, token, img_json_messages if img_json_messages else None
     )
     
-    # Get document context based on query type
-    is_code, kb_name, web_search = _parse_source(source)
-    document_context = await _get_document_context(
-        chat_id, query, is_code, kb_name, web_search, keep_original_files
-    )
-    
-    # Build message content combining text and images
-    message_content = _build_message_content(query, document_context, image_contents)
-
     # Variable to store the complete response for saving
     complete_response = {"content": ""}
     
@@ -635,6 +664,26 @@ async def query_chat(
         start_time = time.time()
         
         try:
+            # Check if indexing is needed for default source (chat documents)
+            if source is None:  # Default source = chat documents
+                doc_rag = get_document_rag(str(chat_id))
+                indexing_needed = await doc_rag.check_indexing_needed(str(chat_id))
+                if indexing_needed:
+                    logger.info(f"Indexing needed for chat {chat_id}, performing indexing...")
+                    # Stream indexing progress messages
+                    async for indexing_chunk in perform_indexing_with_progress(doc_rag, str(chat_id)):
+                        yield indexing_chunk
+                    logger.info(f"Indexing completed for chat {chat_id}")
+            
+            # Parse source and get document context after potential indexing
+            is_code, kb_name, web_search = _parse_source(source)
+            document_context = await _get_document_context(
+                chat_id, query, is_code, kb_name, web_search, keep_original_files
+            )
+            
+            # Build message content combining text and images
+            message_content = _build_message_content(query, document_context, image_contents)
+            
             # Create conversation with system prompt, history, and user message
             conversation = [SystemMessage(content=system_prompt)] + memory.messages
             conversation.append(HumanMessage(content=message_content))

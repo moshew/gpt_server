@@ -558,6 +558,47 @@ class DocumentRAG:
         with open(index_file, "rb") as f:
             return pickle.load(f)
     
+    async def check_indexing_needed(self, chat_id: str) -> bool:
+        """
+        Check if indexing is needed for a chat
+        
+        Args:
+            chat_id: Chat identifier
+            
+        Returns:
+            True if indexing is needed, False otherwise
+        """
+        try:
+            doc_info = await self.list_documents(chat_id)
+            
+            document_files = doc_info.get("document_files", [])
+            indexed_files = doc_info.get("indexed_files", [])
+            
+            # If no documents exist, no indexing needed
+            if not document_files:
+                return False
+            
+            # If no index exists but documents exist, indexing needed
+            if not indexed_files:
+                logger.info(f"No index found for chat {chat_id}, indexing needed")
+                return True
+            
+            # Check if new files were added or existing files changed
+            current_files = set(document_files)
+            indexed_files_set = set(indexed_files)
+            
+            # If there are new files, indexing needed
+            if current_files != indexed_files_set:
+                logger.info(f"Files changed for chat {chat_id}: current={current_files}, indexed={indexed_files_set}")
+                return True
+            
+            logger.info(f"Index is up to date for chat {chat_id}")
+            return False
+            
+        except Exception as e:
+            logger.error(f"Error checking indexing status for chat {chat_id}: {e}")
+            # If we can't determine, assume indexing is needed for safety
+            return True
 
     async def retrieve_relevant_documents(self, chat_id: str, query: str, top_k: int = 5) -> List[Document]:
         """
