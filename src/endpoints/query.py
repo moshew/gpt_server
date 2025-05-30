@@ -238,27 +238,24 @@ async def perform_indexing_with_progress(doc_rag: 'DocumentRAG', chat_id: str):
         SSE formatted progress messages
     """
     try:
-        # Send start indexing message
+        # Send start indexing message (raw SSE format without [DONE])
         start_message = "###PROC_INFO: Indexing uploaded documents...###"
-        async for chunk in stream_text_as_sse(start_message):
-            yield chunk
+        yield f"data: {start_message}\n\n"
         
         # Perform actual indexing
         result = await doc_rag.index_documents(chat_id)
         
         logger.info(f"Indexing completed for chat {chat_id}: {result}")
         
-        # Send completion message (clear the processing info)
+        # Send completion message (clear the processing info) - raw SSE format without [DONE]
         end_message = "###PROC_INFO:###"
-        async for chunk in stream_text_as_sse(end_message):
-            yield chunk
+        yield f"data: {end_message}\n\n"
             
     except Exception as e:
         logger.error(f"Error during indexing for chat {chat_id}: {e}")
-        # Send error completion message
+        # Send error completion message - raw SSE format without [DONE]
         error_message = "###PROC_INFO:###"
-        async for chunk in stream_text_as_sse(error_message):
-            yield chunk
+        yield f"data: {error_message}\n\n"
 
 # Endpoint to stop an active query
 @app.post("/stop_query/{chat_id}")
