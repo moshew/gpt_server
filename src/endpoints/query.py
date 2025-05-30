@@ -700,6 +700,7 @@ async def query_chat(
             
             # Stream response from LLM
             async def message_generator():
+                nonlocal response_saved  # Need access to response_saved from outer scope
                 first_chunk = True
                 chunk_count = 0
                 async for content in await process_langchain_messages(
