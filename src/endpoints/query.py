@@ -747,7 +747,9 @@ async def query_chat(
             async for chunk in stream_text_as_sse(error_text):
                 yield chunk
         finally:
+            logger.info(f"Stream response finally block for chat {chat_id}")
             # Always save the complete response at the end
+            logger.info(f"Attempting to save response for chat {chat_id}. Content length: {len(complete_response['content'])}")
             if complete_response["content"]:
                 try:
                     async with SessionLocal() as db:
