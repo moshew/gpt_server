@@ -150,53 +150,43 @@ class DocumentRAG:
     
     def _create_faiss_index(self, dimension: int, embeddings_array: np.ndarray) -> faiss.Index:
         """
-        Create a FAISS index from embeddings, optimized for high-dimensional vectors
-        This function is designed to be run in an executor for thread safety
+        Create an optimized FAISS index for high-dimensional embeddings
         
         Args:
-            dimension: Embedding dimension
+            dimension: Vector dimension
             embeddings_array: Numpy array of embeddings
             
         Returns:
             FAISS index
         """
-        print(f"Creating FAISS index with {len(embeddings_array)} vectors of dimension {dimension}")
-        
         # For small document sets, use a simple flat index
         if len(embeddings_array) < 1000:
-            print("Using IndexFlatL2 for small dataset")
             index = faiss.IndexFlatL2(dimension)
             index.add(embeddings_array)
-            print(f"Successfully created flat index with {index.ntotal} vectors")
             return index
             
         # For larger document sets, use an IVF index for better search performance
         # with high-dimension vectors like text-embedding-3-large (3072 dimensions)
         
-        print("Using IndexIVFFlat for large dataset")
-        
         # Calculate number of clusters based on dataset size
         # Rule of thumb: sqrt(n) clusters where n is number of vectors
         n_clusters = min(4096, max(int(np.sqrt(len(embeddings_array))), 50))
-        print(f"Using {n_clusters} clusters for IVF index")
         
         quantizer = faiss.IndexFlatL2(dimension)  # The quantizer defines how vectors are assigned to clusters
         index = faiss.IndexIVFFlat(quantizer, dimension, n_clusters, faiss.METRIC_L2)
         
         # IVF indexes need to be trained before adding vectors
         if not index.is_trained:
-            print("Training IVF index...")
             index.train(embeddings_array)
         
         # Add vectors to the trained index
-        print("Adding vectors to index...")
         index.add(embeddings_array)
         
         # Set the number of nearest clusters to search
         # Higher values = more accurate but slower searches
         index.nprobe = min(n_clusters, 10)  # Search 10 clusters by default
         
-        print(f"Successfully created IVF index with {index.ntotal} vectors, {n_clusters} clusters, nprobe={index.nprobe}")
+        logger.info(f"Created IVF index with {index.ntotal} vectors, {n_clusters} clusters")
         return index
     
     def _save_index_files(self, index_file: str, faiss_index_file: str, 
@@ -295,11 +285,7 @@ class DocumentRAG:
             
             file_info_list = await run_in_executor(find_all_files)
             
-            print(f"Found {len(file_info_list)} files to index in chat {chat_id} (including subdirectories)")
-            if file_info_list:
-                print("Files found:")
-                for file_info in file_info_list:
-                    print(f"  - {file_info['relative_path']}")
+            logger.info(f"Found {len(file_info_list)} files to index in chat {chat_id}")
             
             if not file_info_list:
                 # Ensure lock file is removed before returning
@@ -316,7 +302,6 @@ class DocumentRAG:
                 try:
                     file_path = file_info["full_path"]
                     relative_path = file_info["relative_path"]
-                    print(f"Loading document {relative_path}...")
                     
                     # Use the async method for loading documents - WAIT for completion
                     documents = await self._load_document(file_path)
@@ -325,7 +310,6 @@ class DocumentRAG:
                     await asyncio.sleep(0)
                     
                     if documents:
-                        print(f"Successfully loaded {len(documents)} documents from {relative_path}")
                         # Add file info to document metadata including subdirectory path
                         for doc in documents:
                             doc.metadata["file_name"] = relative_path  # Use relative path
@@ -334,7 +318,7 @@ class DocumentRAG:
                         all_docs.extend(documents)
                         indexed_files.append(relative_path)
                     else:
-                        print(f"No documents loaded from {relative_path}")
+                        logger.warning(f"No documents loaded from {relative_path}")
                         failed_files.append(relative_path)
                 except Exception as e:
                     logger.error(f"Error loading document {file_info['relative_path']}: {e}")
@@ -350,7 +334,7 @@ class DocumentRAG:
                     await aiofiles.os.remove(lock_file)
                 return {"message": "No content could be extracted from documents", "failed_files": failed_files}
             
-            print(f"Splitting {len(all_docs)} documents into chunks...")
+            logger.info(f"Splitting {len(all_docs)} documents into chunks...")
             # Split documents into chunks using run_in_executor - WAIT for completion
             text_splitter = RecursiveCharacterTextSplitter(
                 chunk_size=1000,
@@ -359,7 +343,6 @@ class DocumentRAG:
             )
             
             chunks = await run_in_executor(text_splitter.split_documents, all_docs)
-            print(f"Created {len(chunks)} chunks")
             
             # Yield control back to the event loop
             await asyncio.sleep(0)
@@ -377,17 +360,15 @@ class DocumentRAG:
             texts = [chunk.page_content for chunk in chunks]
             ids = list(range(len(chunks)))
             
-            print(f"Generating embeddings for {len(texts)} chunks...")
+            logger.info(f"Generating embeddings for {len(texts)} chunks...")
             # Use the embed_documents function - WAIT for completion
             embeddings_list = await embed_documents(texts)
-            print(f"Generated {len(embeddings_list)} embeddings")
             
             # Yield control back to the event loop
             await asyncio.sleep(0)
             
             # Create FAISS index optimized for high-dimensional vectors
             dimension = len(embeddings_list[0])
-            logger.info(f"Creating FAISS index with {dimension} dimensions")
             
             # Convert to numpy array and create index - WAIT for completion
             embeddings_array = np.array(embeddings_list, dtype=np.float32)
@@ -399,21 +380,17 @@ class DocumentRAG:
             await asyncio.sleep(0)
             
             # Save index and document store using run_in_executor - WAIT for completion
-            print(f"Saving index to {index_file}...")
             await run_in_executor(
                 lambda: self._save_document_index(index_file, doc_store, ids, 
                                                  indexed_files, failed_files, dimension)
             )
             
-            print(f"Saving FAISS index to {faiss_index_file}...")
             await run_in_executor(faiss.write_index, index, faiss_index_file)
             
             # Verify that both files were actually saved
             if not (await aiofiles.ospath.exists(index_file) and 
                     await aiofiles.ospath.exists(faiss_index_file)):
                 raise Exception("Failed to save index files to disk")
-            
-            print(f"Index files successfully saved and verified")
             
             result = {
                 "message": "Documents indexed successfully",
@@ -423,7 +400,7 @@ class DocumentRAG:
                 "embedding_model": EMBEDDING_MODEL,
                 "dimension": dimension
             }
-            print(f"Indexing completed: {result}")
+            logger.info(f"Indexing completed: {len(indexed_files)} files, {len(chunks)} chunks")
             return result
             
         except Exception as e:
@@ -435,12 +412,11 @@ class DocumentRAG:
             try:
                 if await aiofiles.ospath.exists(lock_file):
                     await aiofiles.os.remove(lock_file)
-                    print(f"Lock file {lock_file} removed")
             except Exception as e:
                 logger.error(f"Error removing lock file: {e}")
             
             # Final verification that everything is complete
-            print(f"Indexing process for chat {chat_id} fully completed")
+            logger.info(f"Indexing process for chat {chat_id} fully completed")
     
     async def _create_lock_file_async(self, lock_file: str):
         """
@@ -768,10 +744,7 @@ async def _get_original_files_content(chat_id: str, source_type: str) -> str:
     total_words = 0
     
     try:
-        logger.info(f"Reading original files from {docs_dir} for {source_description}")
-        
         if not os.path.exists(docs_dir):
-            logger.info(f"Directory {docs_dir} does not exist")
             return ""
         
         # Supported file extensions
@@ -821,20 +794,14 @@ async def _get_original_files_content(chat_id: str, source_type: str) -> str:
                     file_header = f"\n--- File: {relative_path} ---\n"
                     all_content.append(file_header + content)
                     total_words += word_count
-                    
-                    logger.info(f"Added file {relative_path}: {word_count} words (total: {total_words})")
-                    
                 except Exception as e:
                     logger.warning(f"Could not read file {file_path}: {e}")
                     continue
         
         if not all_content:
-            logger.info(f"No supported files found in {docs_dir}")
             return ""
         
         combined_content = "\n".join(all_content)
-        logger.info(f"Combined {len(all_content)} files from {source_description}: {total_words} words total")
-        
         return f"Original file contents from {source_description}:\n{combined_content}"
         
     except HTTPException:

@@ -670,7 +670,6 @@ async def query_chat(
     async def stream_response():
         """Stream the LLM response"""
         nonlocal complete_response
-        response_saved = False  # Track if response was already saved
         start_time = time.time()
         
         try:
@@ -700,7 +699,7 @@ async def query_chat(
             
             # Stream response from LLM
             async def message_generator():
-                nonlocal response_saved  # Need access to response_saved from outer scope
+                nonlocal complete_response
                 first_chunk = True
                 chunk_count = 0
                 async for content in await process_langchain_messages(
@@ -728,16 +727,6 @@ async def query_chat(
                     complete_response["content"] += content
                     chunk_count += 1
                     
-                    # Save response every 20 chunks as backup (in case of disconnection)
-                    if chunk_count % 20 == 0 and not response_saved:
-                        try:
-                            async with SessionLocal() as db:
-                                await save_message(db, chat_id, "assistant", complete_response["content"])
-                                response_saved = True
-                                logger.info(f"Assistant response saved as backup for chat {chat_id} (chunk {chunk_count})")
-                        except Exception as backup_save_error:
-                            logger.error(f"Failed to save backup assistant response for chat {chat_id}: {backup_save_error}")
-                    
                     yield content
                 
                 logger.info(f"Streaming completed for chat {chat_id}. Total chunks: {chunk_count}, Content length: {len(complete_response['content'])}")
@@ -758,35 +747,15 @@ async def query_chat(
             async for chunk in stream_text_as_sse(error_text):
                 yield chunk
         finally:
-            # Always try to save the response, regardless of how the stream ended
-            logger.info(f"Finally block: attempting to save response for chat {chat_id}. Content length: {len(complete_response['content'])}, Already saved: {response_saved}")
-            
-            if complete_response["content"] and not response_saved:
+            # Always save the complete response at the end
+            if complete_response["content"]:
                 try:
                     async with SessionLocal() as db:
                         await save_message(db, chat_id, "assistant", complete_response["content"])
-                        logger.info(f"Assistant response saved successfully for chat {chat_id} (final save)")
+                        logger.info(f"Assistant response saved successfully for chat {chat_id}. Content length: {len(complete_response['content'])}")
                 except Exception as save_error:
                     logger.error(f"Failed to save assistant response for chat {chat_id}: {save_error}")
-            elif complete_response["content"] and response_saved:
-                # Update the saved message with final content
-                try:
-                    async with SessionLocal() as db:
-                        # Get the last assistant message and update it
-                        result = await db.execute(
-                            select(Message)
-                            .filter(Message.chat_id == chat_id, Message.sender == "assistant")
-                            .order_by(Message.timestamp.desc())
-                            .limit(1)
-                        )
-                        last_message = result.scalars().first()
-                        if last_message:
-                            last_message.content = complete_response["content"]
-                            await db.commit()
-                            logger.info(f"Assistant response updated with final content for chat {chat_id}")
-                except Exception as update_error:
-                    logger.error(f"Failed to update assistant response for chat {chat_id}: {update_error}")
-            elif not complete_response["content"]:
+            else:
                 logger.warning(f"No content to save for chat {chat_id} - response content is empty")
             
             unregister_active_query(chat_id)
