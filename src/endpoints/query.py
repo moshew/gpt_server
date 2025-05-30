@@ -670,7 +670,7 @@ async def query_chat(
     
     async def stream_response():
         """Stream the LLM response"""
-        nonlocal response_saved
+        nonlocal response_saved, complete_response
         start_time = time.time()
         
         try:
