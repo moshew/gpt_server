@@ -533,7 +533,7 @@ async def setup_query(
         
     # Create a cancellation event for this query
     cancel_event = register_active_query(chat_id)
-    return (cancel_event, memory, app.state.system_prompt, keep_original_files)
+    return (cancel_event, memory, app.state.system_prompt)
 
 @app.post("/start_query_session/{chat_id}")
 async def start_query_session(
@@ -660,7 +660,7 @@ async def query_chat(
     img_json_messages = _prepare_image_messages(image_contents, chat_id)
     
     # Setup query authentication, memory, and save messages
-    cancel_event, memory, system_prompt, keep_original_files = await setup_query(
+    cancel_event, memory, system_prompt = await setup_query(
         chat_id, query, token, img_json_messages if img_json_messages else None, keep_original_files
     )
     
@@ -672,8 +672,8 @@ async def query_chat(
         start_time = time.time()
         
         try:
-            # Check if indexing is needed for default source (chat documents)
-            if source is None:  # Default source = chat documents
+            # Check if indexing is needed for default source (chat documents) and not using original files
+            if source is None and not keep_original_files:  # Default source = chat documents AND not using original files
                 doc_rag = get_document_rag(str(chat_id))
                 indexing_needed = await doc_rag.check_indexing_needed(str(chat_id))
                 if indexing_needed:
