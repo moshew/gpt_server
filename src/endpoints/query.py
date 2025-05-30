@@ -666,11 +666,11 @@ async def query_chat(
     
     # Variable to store the complete response for saving
     complete_response = {"content": ""}
-    response_saved = False  # Track if response was already saved
     
     async def stream_response():
         """Stream the LLM response"""
-        nonlocal response_saved, complete_response
+        nonlocal complete_response
+        response_saved = False  # Track if response was already saved
         start_time = time.time()
         
         try:
