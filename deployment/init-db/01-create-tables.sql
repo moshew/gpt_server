@@ -10,7 +10,8 @@ CREATE TABLE public.chats (
     id integer NOT NULL,
     user_id integer,
     chat_name character varying,
-    created_at timestamp without time zone
+    created_at timestamp without time zone,
+    keep_original_files boolean DEFAULT false
 );
 
 

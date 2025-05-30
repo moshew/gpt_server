@@ -160,13 +160,16 @@ async def get_chat_data(
                 }
                 for message in messages
             ],
-            "docs": [
-                {
-                    "id": file.id,
-                    "file_name": file.file_name
-                }
-                for file in doc_files
-            ],
+            "docs": {
+                "keep_original_files": chat.keep_original_files,
+                "files": [
+                    {
+                        "id": file.id,
+                        "file_name": file.file_name
+                    }
+                    for file in doc_files
+                ]
+            },
             "code": [
                 {
                     "id": file.id,

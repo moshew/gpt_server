@@ -24,7 +24,7 @@ from fastapi import Depends, BackgroundTasks, HTTPException, Query, File, Upload
 from fastapi.responses import StreamingResponse, JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from ..database import User, Message
+from ..database import User, Message, Chat
 from langchain.schema import HumanMessage, SystemMessage
 from langchain_core.chat_history import InMemoryChatMessageHistory
 
@@ -489,7 +489,8 @@ async def setup_query(
     chat_id: int,
     query: Optional[str],
     token: str,
-    img_json_messages: Optional[List[str]] = None
+    img_json_messages: Optional[List[str]] = None,
+    keep_original_files: bool = False
 ) -> tuple:
     """
     Setup common resources for a query
@@ -499,6 +500,7 @@ async def setup_query(
         query: User's question (can be None if only images)
         token: Authentication token
         img_json_messages: List of image JSON messages
+        keep_original_files: Whether to send original file contents instead of RAG excerpts (may hit token limits)
         
     Returns:
         A tuple of (cancel_event, memory, system_prompt)
@@ -510,6 +512,15 @@ async def setup_query(
     async with SessionLocal() as db:
         user = await get_user_from_token(token, db)
         await verify_chat_ownership(chat_id, user.id, db)
+        
+        # Update chat with keep_original_files preference only if different
+        result = await db.execute(
+            select(Chat).filter(Chat.id == chat_id)
+        )
+        chat = result.scalars().first()
+        if chat and chat.keep_original_files != keep_original_files:
+            chat.keep_original_files = keep_original_files
+            await db.commit()
         
         # Save query message if provided
         if query:
@@ -525,7 +536,7 @@ async def setup_query(
         
     # Create a cancellation event for this query
     cancel_event = register_active_query(chat_id)
-    return (cancel_event, memory, app.state.system_prompt)
+    return (cancel_event, memory, app.state.system_prompt, keep_original_files)
 
 @app.post("/start_query_session/{chat_id}")
 async def start_query_session(
@@ -652,8 +663,8 @@ async def query_chat(
     img_json_messages = _prepare_image_messages(image_contents, chat_id)
     
     # Setup query authentication, memory, and save messages
-    cancel_event, memory, system_prompt = await setup_query(
-        chat_id, query, token, img_json_messages if img_json_messages else None
+    cancel_event, memory, system_prompt, keep_original_files = await setup_query(
+        chat_id, query, token, img_json_messages if img_json_messages else None, keep_original_files
     )
     
     # Variable to store the complete response for saving

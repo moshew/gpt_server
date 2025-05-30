@@ -1,5 +1,5 @@
 # Updated database.py with improved connection pooling
-from sqlalchemy import Column, Integer, String, ForeignKey, DateTime, Text, create_engine
+from sqlalchemy import Column, Integer, String, ForeignKey, DateTime, Text, Boolean
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker, declarative_base
 import secrets
@@ -68,6 +68,7 @@ class Chat(Base):
     user_id = Column(Integer, ForeignKey("users.id"))
     chat_name = Column(String)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    keep_original_files = Column(Boolean, default=False)
 
 # Message model to store conversation history
 class Message(Base):
