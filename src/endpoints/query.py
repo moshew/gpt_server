@@ -245,6 +245,11 @@ async def save_message(db: AsyncSession, chat_id: int, sender: str, content: str
         await db.commit()
         logger.info(f"Successfully committed message to database for chat {chat_id}")
         
+    except asyncio.CancelledError:
+        logger.warning(f"Save message operation was cancelled for chat {chat_id}")
+        # Don't try to rollback if cancelled, just let it be
+        # Don't re-raise to avoid propagating cancellation error
+        return  # Exit gracefully without saving
     except Exception as e:
         logger.error(f"Error saving message for chat {chat_id}: {e}")
         logger.error(f"Exception type: {type(e)}")
@@ -254,6 +259,8 @@ async def save_message(db: AsyncSession, chat_id: int, sender: str, content: str
         try:
             await db.rollback()
             logger.info(f"Rolled back transaction for chat {chat_id}")
+        except asyncio.CancelledError:
+            logger.warning(f"Rollback was also cancelled for chat {chat_id} - this is expected")
         except Exception as rollback_error:
             logger.error(f"Error during rollback for chat {chat_id}: {rollback_error}")
         raise  # Re-raise the exception so it's caught by the calling code
@@ -796,15 +803,13 @@ async def query_chat(
                     async with SessionLocal() as db:
                         logger.info(f"Database session created for chat {chat_id}")
                         
-                        # Add timeout to the save operation to detect hanging
-                        logger.info(f"Starting save_message with 30 second timeout for chat {chat_id}")
-                        await asyncio.wait_for(
-                            save_message(db, chat_id, "assistant", complete_response["content"]), 
-                            timeout=30.0
-                        )
+                        # Save without timeout to avoid cancellation issues
+                        logger.info(f"Starting save_message for chat {chat_id}")
+                        await save_message(db, chat_id, "assistant", complete_response["content"])
                         logger.info(f"Assistant response saved successfully for chat {chat_id}. Content length: {len(complete_response['content'])}")
-                except asyncio.TimeoutError:
-                    logger.error(f"TIMEOUT: save_message took longer than 30 seconds for chat {chat_id}")
+                except asyncio.CancelledError:
+                    logger.warning(f"Save operation was cancelled for chat {chat_id} - this is expected if user stopped the query")
+                    # Don't re-raise CancelledError to avoid propagation
                 except Exception as save_error:
                     logger.error(f"Failed to save assistant response for chat {chat_id}: {save_error}")
                     logger.error(f"Save error type: {type(save_error)}")
