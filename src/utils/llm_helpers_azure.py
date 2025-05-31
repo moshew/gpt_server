@@ -11,6 +11,7 @@ from typing import AsyncGenerator, Dict, Any, Optional, List, Union
 import requests, json
 import tempfile
 import os
+import logging
 
 import openai
 from langchain.schema import HumanMessage, AIMessage, SystemMessage, BaseMessage
@@ -18,6 +19,10 @@ from langchain_openai import AzureOpenAIEmbeddings
 from .async_helpers import run_in_executor
 from config import AZURE_API_KEY, AZURE_ENDPOINT, AZURE_API_VERSION
 from config import DALLE_API_KEY, DALLE_ENDPOINT, DALLE_API_VERSION
+from config import MAX_CONCURRENT_LLM_CALLS, MAX_CONCURRENT_EMBEDDING_CALLS
+
+# Configure logging
+logger = logging.getLogger("llm_helpers")
 
 # Model configurations for different use cases with Azure deployment names
 MODEL_CONFIGS = {
@@ -58,6 +63,11 @@ _embeddings = None
 _openai_client = None
 _dalle_client = None
 
+# Rate limiting semaphore to prevent too many concurrent requests
+# These can be adjusted based on your OpenAI rate limits
+_openai_semaphore = asyncio.Semaphore(MAX_CONCURRENT_LLM_CALLS)
+_embedding_semaphore = asyncio.Semaphore(MAX_CONCURRENT_EMBEDDING_CALLS)
+
 def get_openai_client():
     """
     Get or create a global Azure OpenAI client instance
@@ -93,7 +103,7 @@ def get_embeddings():
 
 async def embed_documents(texts: List[str]) -> List[List[float]]:
     """
-    Generate embeddings for a list of text documents using Azure
+    Generate embeddings for a list of text documents using Azure with rate limiting
     
     Args:
         texts: List of text strings to embed
@@ -101,12 +111,21 @@ async def embed_documents(texts: List[str]) -> List[List[float]]:
     Returns:
         List of embedding vectors
     """
-    embeddings = get_embeddings()
-    return await run_in_executor(embeddings.embed_documents, texts)
+    # Check if we need to wait for rate limiting
+    if _embedding_semaphore.locked():
+        logger.info(f"Embedding rate limiting active - waiting for available slot for {len(texts)} documents")
+    
+    async with _embedding_semaphore:  # Rate limiting for embeddings
+        logger.debug(f"Acquired embedding semaphore slot for {len(texts)} documents")
+        try:
+            embeddings = get_embeddings()
+            return await run_in_executor(embeddings.embed_documents, texts)
+        finally:
+            logger.debug("Released embedding semaphore slot")
 
 async def embed_query(text: str) -> List[float]:
     """
-    Generate embeddings for a single query text using Azure
+    Generate embeddings for a single query text using Azure with rate limiting
     
     Args:
         text: Query text to embed
@@ -114,8 +133,17 @@ async def embed_query(text: str) -> List[float]:
     Returns:
         Embedding vector
     """
-    embeddings = get_embeddings()
-    return await run_in_executor(embeddings.embed_query, text)
+    # Check if we need to wait for rate limiting
+    if _embedding_semaphore.locked():
+        logger.info("Embedding rate limiting active - waiting for available slot for query")
+    
+    async with _embedding_semaphore:  # Rate limiting for embeddings
+        logger.debug("Acquired embedding semaphore slot for query")
+        try:
+            embeddings = get_embeddings()
+            return await run_in_executor(embeddings.embed_query, text)
+        finally:
+            logger.debug("Released embedding semaphore slot")
 
 async def call_llm(
     prompt: str = None,
@@ -125,84 +153,85 @@ async def call_llm(
     stream: bool = False
 ) -> Union[str, AsyncGenerator[str, None]]:
     """
-    General-purpose LLM call function that supports different Azure configurations
+    Call an LLM with Azure AI Services with rate limiting
     
     Args:
-        prompt: The prompt to send to the model (single message)
-        messages: List of message objects in OpenAI format (if provided, overrides prompt)
-        model_config: Name of a predefined configuration or "custom"
-        custom_config: Custom configuration parameters (overrides predefined config)
+        prompt: Text prompt to send to the LLM
+        messages: List of message dictionaries (alternative to prompt)
+        model_config: Configuration preset to use ("default", "code", "fast", "precise", "mini")
+        custom_config: Custom configuration parameters to override defaults
         stream: Whether to stream the response
         
     Returns:
-        Either the complete response as a string (stream=False) or 
-        a generator that yields text chunks (stream=True)
+        LLM response text or async generator for streaming
     """
-    try:
-        # Get the base configuration
-        config = MODEL_CONFIGS.get(model_config, MODEL_CONFIGS["default"]).copy()
-        
-        # Apply any custom configuration parameters
-        if custom_config:
-            config.update(custom_config)
+    
+    # Check if we need to wait for rate limiting
+    if _openai_semaphore.locked():
+        logger.info("Rate limiting active - waiting for available slot for LLM call")
+    
+    async with _openai_semaphore:  # Rate limiting
+        logger.debug("Acquired LLM semaphore slot")
+        try:
+            # Get the base configuration
+            config = MODEL_CONFIGS.get(model_config, MODEL_CONFIGS["default"]).copy()
             
-        # Extract parameters
-        deployment_name = config.pop("deployment_name", "gpt-4.1")
-        temperature = config.pop("temperature", 0.2)
-        max_tokens = config.pop("max_tokens", 8000)
-        
-        # Get the Azure OpenAI client
-        client = get_openai_client()
-        
-        # Prepare messages
-        if messages is None:
-            if prompt is None:
-                raise ValueError("Either prompt or messages must be provided")
-            messages = [{"role": "user", "content": prompt}]
-        
-        # Determine which model we're using to filter allowed parameters
-        model_type = "default"
-        if "o3-mini" in deployment_name:
-            model_type = "o3-mini"
-        
-        # Prepare API parameters with only allowed parameters for this model
-        api_params = {
-            "model": deployment_name,
-            "messages": messages,
-            "max_completion_tokens": max_tokens,
-        }
-        
-        # Only add temperature if this model supports it
-        if "temperature" in ALLOWED_PARAMS[model_type]:
-            api_params["temperature"] = temperature
+            # Apply any custom configuration parameters
+            if custom_config:
+                config.update(custom_config)
+                
+            # Extract parameters
+            deployment_name = config.pop("deployment_name", "gpt-4.1")
+            temperature = config.pop("temperature", 0.2)
+            max_tokens = config.pop("max_tokens", 8000)
             
-        # Add streaming parameter
-        api_params["stream"] = stream
-        
-        if stream:
-            return _stream_messages_response(
-                client=client,
-                messages=messages,
-                deployment_name=deployment_name,
-                temperature=temperature if "temperature" in ALLOWED_PARAMS[model_type] else None,
-                max_tokens=max_tokens,
-                **{k: v for k, v in config.items() if k in ALLOWED_PARAMS[model_type]}
-            )
-        else:
-            # For non-streaming, we can run in executor to prevent blocking
-            def generate_response():
+            # Get the Azure OpenAI client
+            client = get_openai_client()
+            
+            # Prepare messages
+            if messages is None:
+                if prompt is None:
+                    raise ValueError("Either prompt or messages must be provided")
+                messages = [{"role": "user", "content": prompt}]
+            
+            # Determine which model we're using to filter allowed parameters
+            model_type = "default"
+            if "o3-mini" in deployment_name:
+                model_type = "o3-mini"
+            
+            # Prepare API parameters with only allowed parameters for this model
+            api_params = {
+                "model": deployment_name,
+                "messages": messages,
+                "max_completion_tokens": max_tokens,
+            }
+            
+            # Only add temperature if this model supports it
+            if "temperature" in ALLOWED_PARAMS[model_type]:
+                api_params["temperature"] = temperature
+                
+            # Add streaming parameter
+            api_params["stream"] = stream
+            
+            if stream:
+                # For streaming, return the async generator
+                return _stream_messages_response(client, messages, deployment_name, temperature, max_tokens, **config)
+            else:
+                # For non-streaming, get the complete response
                 response = client.chat.completions.create(**api_params)
                 return response.choices[0].message.content
                 
-            return await run_in_executor(generate_response)
-            
-    except Exception as e:
-        print(f"Error in call_llm: {e}")
-        if stream:
-            async def error_generator():
-                yield f"Error generating response: {str(e)}"
-            return error_generator()
-        return f"Error generating response: {str(e)}"
+        except Exception as e:
+            error_msg = f"Error calling LLM: {str(e)}"
+            logger.error(error_msg)
+            if stream:
+                async def error_generator():
+                    yield error_msg
+                return error_generator()
+            else:
+                return error_msg
+        finally:
+            logger.debug("Released LLM semaphore slot")
 
 async def _stream_messages_response(
     client, messages: List[Dict[str, str]], deployment_name: str, temperature: float, max_tokens: int, **kwargs
@@ -412,3 +441,25 @@ async def execute_image_generation(
         if "ResponsibleAIPolicyViolation" in e_str:
             e_str = "Your request was rejected as a result of our safety system. Your prompt may contain text that is not allowed by our safety system."
         return {"error": e_str}
+
+def get_rate_limit_status() -> Dict[str, Any]:
+    """
+    Get current rate limiting status
+    
+    Returns:
+        Dictionary with semaphore status information
+    """
+    return {
+        "llm_calls": {
+            "max_concurrent": MAX_CONCURRENT_LLM_CALLS,
+            "available_slots": _openai_semaphore._value,
+            "in_use": MAX_CONCURRENT_LLM_CALLS - _openai_semaphore._value,
+            "locked": _openai_semaphore.locked()
+        },
+        "embedding_calls": {
+            "max_concurrent": MAX_CONCURRENT_EMBEDDING_CALLS,
+            "available_slots": _embedding_semaphore._value,
+            "in_use": MAX_CONCURRENT_EMBEDDING_CALLS - _embedding_semaphore._value,
+            "locked": _embedding_semaphore.locked()
+        }
+    }

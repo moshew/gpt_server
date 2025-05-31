@@ -28,4 +28,8 @@ SECRET_KEY = os.getenv("SECRET_KEY")
 # Google Serper API key for web search
 SERPER_API_KEY = os.getenv("SERPER_API_KEY", "")
 
-DEBUG_MODE = False
+# Rate Limiting Configuration
+MAX_CONCURRENT_LLM_CALLS = int(os.getenv("MAX_CONCURRENT_LLM_CALLS", "25"))
+MAX_CONCURRENT_EMBEDDING_CALLS = int(os.getenv("MAX_CONCURRENT_EMBEDDING_CALLS", "2"))
+
+DEBUG_MODE = os.getenv("DEBUG_MODE", "false").lower() == "true"

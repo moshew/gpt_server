@@ -21,6 +21,10 @@ from ..app_init import app
 from ..auth import get_current_user
 from ..database import SessionLocal
 from ..utils import run_in_executor, call_llm
+from ..utils.llm_helpers_azure import get_rate_limit_status
+
+# Request deduplication cache
+_active_chat_requests = {}
 
 # Class for chat creation request
 class ChatRequest(BaseModel):
@@ -118,143 +122,175 @@ async def get_chat_data(
     
     logger = logging.getLogger("chat_data")
     start_time = time.time()
-    logger.info(f"Starting chat_data request for chat {chat_id}")
+    request_id = str(id(request))[:8]  # Short request ID for logging
+    logger.info(f"[{request_id}] Starting chat_data request for chat {chat_id}")
     
-    try:
-        # Add timeout for database operations
-        timeout_duration = 30  # 30 seconds timeout
-        
-        async def db_operations():
-            logger.info(f"Creating database session for chat {chat_id}")
-            # Log database pool status
-            try:
-                from ..database import get_engine_status
-                pool_status = await get_engine_status()
-                logger.info(f"DB Pool status before session for chat {chat_id}: {pool_status}")
-            except Exception as pool_err:
-                logger.warning(f"Could not get pool status for chat {chat_id}: {pool_err}")
-            
-            async with SessionLocal() as db:
-                logger.info(f"Database session created, checking chat ownership for chat {chat_id}")
-                
-                # Check chat ownership
-                user = await get_current_user(request, db)
-                logger.info(f"User {user.id} authenticated, querying chat {chat_id}")
-                
-                result = await db.execute(
-                    select(Chat).filter(Chat.id == chat_id, Chat.user_id == user.id)
-                )
-                chat = result.scalars().first()
-                logger.info(f"Chat ownership query completed for chat {chat_id}")
-            
-                if not chat:
-                    raise HTTPException(status_code=404, detail="Chat not found or access denied")
-            
-                logger.info(f"Querying messages for chat {chat_id}")
-                # Query all messages for this chat ordered by timestamp
-                result = await db.execute(
-                    select(Message).filter(Message.chat_id == chat_id).order_by(Message.timestamp)
-                )
-                messages = result.scalars().all()
-                logger.info(f"Found {len(messages)} messages for chat {chat_id}")
-            
-                logger.info(f"Querying files for chat {chat_id}")
-                # Query all files for this chat
-                result = await db.execute(
-                    select(File).filter(File.chat_id == chat_id)
-                )
-                files = result.scalars().all()
-                logger.info(f"Found {len(files)} files for chat {chat_id}")
-                
-                return chat, messages, files
-        
-        # Use asyncio.wait_for to add timeout
+    # Request deduplication - check if same request is already in progress
+    request_key = f"chat_data_{chat_id}"
+    
+    if request_key in _active_chat_requests:
+        logger.info(f"[{request_id}] Duplicate request detected for chat {chat_id}, waiting for existing request")
         try:
-            chat, messages, files = await asyncio.wait_for(db_operations(), timeout=timeout_duration)
-            logger.info(f"Database operations completed for chat {chat_id} in {time.time() - start_time:.2f}s")
-            
-            # Log database pool status after completion
-            try:
-                from ..database import get_engine_status
-                pool_status_after = await get_engine_status()
-                logger.info(f"DB Pool status after completion for chat {chat_id}: {pool_status_after}")
-            except Exception as pool_err:
-                logger.warning(f"Could not get pool status after completion for chat {chat_id}: {pool_err}")
-                
+            # Wait for the existing request to complete (max 15 seconds)
+            result = await asyncio.wait_for(_active_chat_requests[request_key], timeout=15.0)
+            logger.info(f"[{request_id}] Returned cached result for chat {chat_id}")
+            return result
         except asyncio.TimeoutError:
-            logger.error(f"Database operations timed out after {timeout_duration}s for chat {chat_id}")
-            # Log pool status during timeout
+            logger.warning(f"[{request_id}] Existing request timed out for chat {chat_id}, proceeding with new request")
+            # Remove the timed-out request
+            _active_chat_requests.pop(request_key, None)
+        except Exception as e:
+            logger.error(f"[{request_id}] Error waiting for existing request for chat {chat_id}: {e}")
+            _active_chat_requests.pop(request_key, None)
+    
+    # Create a new task for this request
+    async def execute_request():
+        try:
+            # Add timeout for database operations
+            timeout_duration = 30  # 30 seconds timeout
+            
+            async def db_operations():
+                logger.info(f"[{request_id}] Creating database session for chat {chat_id}")
+                # Log database pool status
+                try:
+                    from ..database import get_engine_status
+                    pool_status = await get_engine_status()
+                    logger.info(f"[{request_id}] DB Pool status before session for chat {chat_id}: {pool_status}")
+                except Exception as pool_err:
+                    logger.warning(f"[{request_id}] Could not get pool status for chat {chat_id}: {pool_err}")
+                
+                async with SessionLocal() as db:
+                    logger.info(f"[{request_id}] Database session created, checking chat ownership for chat {chat_id}")
+                    
+                    # Check chat ownership
+                    user = await get_current_user(request, db)
+                    logger.info(f"[{request_id}] User {user.id} authenticated, querying chat {chat_id}")
+                    
+                    result = await db.execute(
+                        select(Chat).filter(Chat.id == chat_id, Chat.user_id == user.id)
+                    )
+                    chat = result.scalars().first()
+                    logger.info(f"[{request_id}] Chat ownership query completed for chat {chat_id}")
+                
+                    if not chat:
+                        raise HTTPException(status_code=404, detail="Chat not found or access denied")
+                
+                    logger.info(f"[{request_id}] Querying messages for chat {chat_id}")
+                    # Query all messages for this chat ordered by timestamp
+                    result = await db.execute(
+                        select(Message).filter(Message.chat_id == chat_id).order_by(Message.timestamp)
+                    )
+                    messages = result.scalars().all()
+                    logger.info(f"[{request_id}] Found {len(messages)} messages for chat {chat_id}")
+                
+                    logger.info(f"[{request_id}] Querying files for chat {chat_id}")
+                    # Query all files for this chat
+                    result = await db.execute(
+                        select(File).filter(File.chat_id == chat_id)
+                    )
+                    files = result.scalars().all()
+                    logger.info(f"[{request_id}] Found {len(files)} files for chat {chat_id}")
+                    
+                    return chat, messages, files
+            
+            # Use asyncio.wait_for to add timeout
             try:
-                from ..database import get_engine_status
-                pool_status_timeout = await get_engine_status()
-                logger.error(f"DB Pool status during timeout for chat {chat_id}: {pool_status_timeout}")
-            except Exception as pool_err:
-                logger.warning(f"Could not get pool status during timeout for chat {chat_id}: {pool_err}")
-            raise HTTPException(status_code=504, detail=f"Request timed out after {timeout_duration} seconds")
-        
-        logger.info(f"Processing file separation for chat {chat_id}")
-        # Separate files by type
-        doc_files = [file for file in files if file.file_type == "doc"]
-        code_files = [file for file in files if file.file_type == "code"]
+                chat, messages, files = await asyncio.wait_for(db_operations(), timeout=timeout_duration)
+                logger.info(f"[{request_id}] Database operations completed for chat {chat_id} in {time.time() - start_time:.2f}s")
+                
+                # Log database pool status after completion
+                try:
+                    from ..database import get_engine_status
+                    pool_status_after = await get_engine_status()
+                    logger.info(f"[{request_id}] DB Pool status after completion for chat {chat_id}: {pool_status_after}")
+                except Exception as pool_err:
+                    logger.warning(f"[{request_id}] Could not get pool status after completion for chat {chat_id}: {pool_err}")
+                    
+            except asyncio.TimeoutError:
+                logger.error(f"[{request_id}] Database operations timed out after {timeout_duration}s for chat {chat_id}")
+                # Log pool status during timeout
+                try:
+                    from ..database import get_engine_status
+                    pool_status_timeout = await get_engine_status()
+                    logger.error(f"[{request_id}] DB Pool status during timeout for chat {chat_id}: {pool_status_timeout}")
+                except Exception as pool_err:
+                    logger.warning(f"[{request_id}] Could not get pool status during timeout for chat {chat_id}: {pool_err}")
+                raise HTTPException(status_code=504, detail=f"Request timed out after {timeout_duration} seconds")
+            
+            logger.info(f"[{request_id}] Processing file separation for chat {chat_id}")
+            # Separate files by type
+            doc_files = [file for file in files if file.file_type == "doc"]
+            code_files = [file for file in files if file.file_type == "code"]
 
-        def format_message_content(context):
-            try:
-                return json.loads(context)
-            except json.JSONDecodeError:
-                pass
-            return context
-        
-        logger.info(f"Formatting response for chat {chat_id}")
-        response = {
-            "chat_id": chat_id,
-            "chat_name": chat.chat_name,
-            "messages": [
-                {
-                    "id": message.id,
-                    "sender": message.sender,
-                    "content": format_message_content(message.content),
-                    "timestamp": message.timestamp
-                }
-                for message in messages
-            ],
-            "docs": {
-                "keep_original_files": chat.keep_original_files,
-                "files": [
+            def format_message_content(context):
+                try:
+                    return json.loads(context)
+                except json.JSONDecodeError:
+                    pass
+                return context
+            
+            logger.info(f"[{request_id}] Formatting response for chat {chat_id}")
+            response = {
+                "chat_id": chat_id,
+                "chat_name": chat.chat_name,
+                "messages": [
+                    {
+                        "id": message.id,
+                        "sender": message.sender,
+                        "content": format_message_content(message.content),
+                        "timestamp": message.timestamp
+                    }
+                    for message in messages
+                ],
+                "docs": {
+                    "keep_original_files": chat.keep_original_files,
+                    "files": [
+                        {
+                            "id": file.id,
+                            "file_name": file.file_name
+                        }
+                        for file in doc_files
+                    ]
+                },
+                "code": [
                     {
                         "id": file.id,
                         "file_name": file.file_name
                     }
-                    for file in doc_files
-                ]
-            },
-            "code": [
-                {
-                    "id": file.id,
-                    "file_name": file.file_name
-                }
-                for file in code_files
-            ],
-            "message_count": len(messages),
-            "doc_count": len(doc_files),
-            "code_count": len(code_files)
-        }
-        
-        total_time = time.time() - start_time
-        logger.info(f"Chat_data request completed for chat {chat_id} in {total_time:.2f}s")
-        return response
-        
-    except HTTPException:
-        # Re-raise HTTP exceptions
-        total_time = time.time() - start_time
-        logger.error(f"HTTP exception in chat_data for chat {chat_id} after {total_time:.2f}s")
-        raise
-    except Exception as e:
-        total_time = time.time() - start_time
-        logger.error(f"Error retrieving chat data for chat {chat_id} after {total_time:.2f}s: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Database error while fetching chat data: {str(e)}"
-        )
+                    for file in code_files
+                ],
+                "message_count": len(messages),
+                "doc_count": len(doc_files),
+                "code_count": len(code_files)
+            }
+            
+            total_time = time.time() - start_time
+            logger.info(f"[{request_id}] Chat_data request completed for chat {chat_id} in {total_time:.2f}s")
+            return response
+            
+        except HTTPException:
+            # Re-raise HTTP exceptions
+            total_time = time.time() - start_time
+            logger.error(f"[{request_id}] HTTP exception in chat_data for chat {chat_id} after {total_time:.2f}s")
+            raise
+        except Exception as e:
+            total_time = time.time() - start_time
+            logger.error(f"[{request_id}] Error retrieving chat data for chat {chat_id} after {total_time:.2f}s: {e}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Database error while fetching chat data: {str(e)}"
+            )
+    
+    # Create and store the task
+    task = asyncio.create_task(execute_request())
+    _active_chat_requests[request_key] = task
+    
+    try:
+        result = await task
+        return result
+    finally:
+        # Clean up the request from cache
+        _active_chat_requests.pop(request_key, None)
 
 # Create new chat with default name endpoint
 @app.post("/new_chat/")
@@ -395,3 +431,22 @@ async def new_named_chat(
             await db.rollback()
             print(f"Error creating new chat: {e}")
             raise HTTPException(status_code=500, detail=f"Error creating new chat: {str(e)}")
+
+# Debug endpoint for rate limiting status
+@app.get("/debug/rate_limits")
+async def get_rate_limits():
+    """
+    Debug endpoint to check rate limiting status
+    
+    Returns:
+        Current rate limiting information
+    """
+    try:
+        status = get_rate_limit_status()
+        return {
+            "rate_limiting": status,
+            "active_chat_requests": len(_active_chat_requests),
+            "active_requests": list(_active_chat_requests.keys())
+        }
+    except Exception as e:
+        return {"error": f"Could not get rate limit status: {e}"}

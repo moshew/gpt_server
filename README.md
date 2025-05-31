@@ -13,6 +13,75 @@ A sophisticated chat system with advanced code analysis, document retrieval, and
 - **Streaming Responses**: Real-time response streaming with SSE
 - **Multi-deployment Support**: Multiple AI model deployments
 
+## Configuration
+
+The server requires a `.env` file in the root directory with the following variables:
+
+### Database Configuration
+```
+DATABASE_URL=postgresql://user:password@localhost:5432/gpt_server
+```
+
+### Azure OpenAI Configuration
+```
+AZURE_API_KEY=your_azure_api_key_here
+AZURE_ENDPOINT=https://your-resource.openai.azure.com/
+AZURE_API_VERSION=2024-12-01-preview
+```
+
+### Azure DALL-E Configuration
+```
+DALLE_API_KEY=your_dalle_api_key_here
+DALLE_ENDPOINT=https://your-dalle-resource.openai.azure.com/
+DALLE_API_VERSION=2024-02-01
+```
+
+### Microsoft Authentication
+```
+MS_CLIENT_ID=your_microsoft_client_id
+MS_CLIENT_SECRET=your_microsoft_client_secret
+MS_TENANT_ID=your_microsoft_tenant_id
+MS_REDIRECT_URI=http://localhost:8000/auth/callback
+```
+
+### JWT Secret Key
+```
+SECRET_KEY=your_secret_key_for_jwt_tokens
+```
+
+### Google Serper API Key for Web Search
+```
+SERPER_API_KEY=your_serper_api_key
+```
+
+### Rate Limiting Configuration
+```
+# Maximum number of concurrent LLM calls allowed (default: 3)
+MAX_CONCURRENT_LLM_CALLS=3
+
+# Maximum number of concurrent embedding calls allowed (default: 2)
+MAX_CONCURRENT_EMBEDDING_CALLS=2
+```
+
+### Debug Mode
+```
+DEBUG_MODE=false
+```
+
+## Rate Limiting
+
+The server implements intelligent rate limiting to prevent OpenAI API rate limit errors (429 responses). You can monitor the current rate limiting status using:
+
+```
+GET /debug/rate_limits
+```
+
+This will return information about:
+- Current LLM call slots in use
+- Current embedding call slots in use
+- Active chat data requests
+- Whether rate limiting is currently active
+
 ## Directory Structure
 
 ```
@@ -82,18 +151,18 @@ Edit `.env` with your configuration:
 DATABASE_URL=postgresql://user:password@localhost:5432/gpt_server
 
 # Azure OpenAI
-AZURE_API_KEY=your_azure_api_key
+AZURE_API_KEY=your_azure_api_key_here
 AZURE_ENDPOINT=https://your-resource.openai.azure.com/
-AZURE_API_VERSION=2024-02-15-preview
+AZURE_API_VERSION=2024-12-01-preview
 
 # Microsoft Authentication
-MS_CLIENT_ID=your_client_id
-MS_CLIENT_SECRET=your_client_secret
-MS_TENANT_ID=your_tenant_id
-MS_REDIRECT_URI=http://localhost:8000/auth/microsoft/callback
+MS_CLIENT_ID=your_microsoft_client_id
+MS_CLIENT_SECRET=your_microsoft_client_secret
+MS_TENANT_ID=your_microsoft_tenant_id
+MS_REDIRECT_URI=http://localhost:8000/auth/callback
 
 # Security
-SECRET_KEY=your_secret_key
+SECRET_KEY=your_secret_key_for_jwt_tokens
 
 # Optional: Web Search
 SERPER_API_KEY=your_serper_api_key
