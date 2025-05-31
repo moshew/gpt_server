@@ -801,14 +801,20 @@ async def query_chat(
             # Save message immediately after streaming completes (before response closes)
             logger.info(f"=== STREAMING COMPLETED - saving message for chat {chat_id} ===")
             if complete_response["content"]:
-                try:
-                    logger.info(f"=== POST-STREAMING save for chat {chat_id}, content length: {len(complete_response['content'])} ===")
-                    async with SessionLocal() as db:
-                        await save_message(db, chat_id, "assistant", complete_response["content"])
-                        logger.info(f"=== POST-STREAMING save SUCCESS for chat {chat_id} ===")
-                    message_saved = True
-                except Exception as post_save_error:
-                    logger.error(f"=== POST-STREAMING save FAILED for chat {chat_id}: {post_save_error} ===")
+                # Create a background task that won't be cancelled when request ends
+                async def background_save_task():
+                    try:
+                        logger.info(f"=== BACKGROUND save task started for chat {chat_id}, content length: {len(complete_response['content'])} ===")
+                        async with SessionLocal() as db:
+                            await save_message(db, chat_id, "assistant", complete_response["content"])
+                            logger.info(f"=== BACKGROUND save SUCCESS for chat {chat_id} ===")
+                    except Exception as bg_save_error:
+                        logger.error(f"=== BACKGROUND save FAILED for chat {chat_id}: {bg_save_error} ===")
+                
+                # Start the background task and don't wait for it
+                asyncio.create_task(background_save_task())
+                message_saved = True
+                logger.info(f"=== BACKGROUND save task created for chat {chat_id} ===")
             
             # Log completion
             elapsed_time = time.time() - start_time
