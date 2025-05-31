@@ -220,11 +220,26 @@ async def save_message(db: AsyncSession, chat_id: int, sender: str, content: str
         content: Message content
     """
     try:
+        logger.info(f"Starting to save message for chat {chat_id}, sender: {sender}, content length: {len(content)}")
         message = Message(chat_id=chat_id, sender=sender, content=content)
+        logger.info(f"Created message object for chat {chat_id}")
+        
         db.add(message)
+        logger.info(f"Added message to db session for chat {chat_id}")
+        
         await db.commit()
+        logger.info(f"Committed message to database for chat {chat_id}")
+        
     except Exception as e:
-        logger.error(f"Error saving message: {e}")
+        logger.error(f"Error saving message for chat {chat_id}: {e}")
+        logger.error(f"Exception type: {type(e)}")
+        logger.error(f"Exception details: {str(e)}")
+        try:
+            await db.rollback()
+            logger.info(f"Rolled back transaction for chat {chat_id}")
+        except Exception as rollback_error:
+            logger.error(f"Error during rollback for chat {chat_id}: {rollback_error}")
+        raise  # Re-raise the exception so it's caught by the calling code
 
 async def perform_indexing_with_progress(doc_rag: 'DocumentRAG', chat_id: str):
     """
@@ -752,15 +767,26 @@ async def query_chat(
             logger.info(f"Attempting to save response for chat {chat_id}. Content length: {len(complete_response['content'])}")
             if complete_response["content"]:
                 try:
+                    logger.info(f"About to create database session for chat {chat_id}")
                     async with SessionLocal() as db:
+                        logger.info(f"Database session created for chat {chat_id}")
                         await save_message(db, chat_id, "assistant", complete_response["content"])
                         logger.info(f"Assistant response saved successfully for chat {chat_id}. Content length: {len(complete_response['content'])}")
                 except Exception as save_error:
                     logger.error(f"Failed to save assistant response for chat {chat_id}: {save_error}")
+                    logger.error(f"Save error type: {type(save_error)}")
+                    logger.error(f"Save error details: {str(save_error)}")
+                    import traceback
+                    logger.error(f"Save error traceback: {traceback.format_exc()}")
             else:
                 logger.warning(f"No content to save for chat {chat_id} - response content is empty")
             
-            unregister_active_query(chat_id)
+            try:
+                logger.info(f"About to unregister active query for chat {chat_id}")
+                unregister_active_query(chat_id)
+                logger.info(f"Unregistered active query for chat {chat_id}")
+            except Exception as unreg_error:
+                logger.error(f"Error unregistering query for chat {chat_id}: {unreg_error}")
     
     return StreamingResponse(
         stream_response(), 
