@@ -220,43 +220,70 @@ async def save_message(db: AsyncSession, chat_id: int, sender: str, content: str
         sender: Message sender ("user" or "assistant")
         content: Message content
     """
-    try:
-        logger.info(f"Starting to save message for chat {chat_id}, sender: {sender}, content length: {len(content)}")
-        logger.info(f"Content preview (first 200 chars): {content[:200]}...")
-        logger.info(f"Content encoding check - is valid UTF-8: {content.encode('utf-8', errors='ignore').decode('utf-8') == content}")
-        
-        # Check database connection status before proceeding
-        logger.info(f"Database session info: {type(db)}")
-        logger.info(f"Database session bind: {db.bind}")
-        
-        # Create message with explicit timestamp
-        current_time = datetime.datetime.utcnow()
-        message = Message(chat_id=chat_id, sender=sender, content=content, timestamp=current_time)
-        logger.info(f"Created message object for chat {chat_id}, timestamp: {message.timestamp}")
-        
-        db.add(message)
-        logger.info(f"Added message to db session for chat {chat_id}")
-        
-        # Log before commit
-        logger.info(f"About to commit for chat {chat_id}")
-        logger.info(f"Session dirty objects count: {len(db.dirty)}")
-        logger.info(f"Session new objects count: {len(db.new)}")
-        
-        await db.commit()
-        logger.info(f"Successfully committed message to database for chat {chat_id}")
-        
-    except Exception as e:
-        logger.error(f"Error saving message for chat {chat_id}: {e}")
-        logger.error(f"Exception type: {type(e)}")
-        logger.error(f"Exception details: {str(e)}")
-        import traceback
-        logger.error(f"Full traceback: {traceback.format_exc()}")
+    max_retries = 3
+    retry_delay = 0.5  # Start with 0.5 seconds
+    
+    for attempt in range(max_retries):
         try:
-            await db.rollback()
-            logger.info(f"Rolled back transaction for chat {chat_id}")
-        except Exception as rollback_error:
-            logger.error(f"Error during rollback for chat {chat_id}: {rollback_error}")
-        # Don't re-raise the exception to allow finally block to complete
+            logger.info(f"Starting to save message for chat {chat_id}, sender: {sender}, content length: {len(content)} (attempt {attempt + 1}/{max_retries})")
+            logger.info(f"Content encoding check - is valid UTF-8: {content.encode('utf-8', errors='ignore').decode('utf-8') == content}")
+            
+            # Check database connection status before proceeding
+            logger.info(f"Database session info: {type(db)}")
+            logger.info(f"Database session bind: {db.bind}")
+            
+            # Create message with explicit timestamp
+            current_time = datetime.datetime.utcnow()
+            message = Message(chat_id=chat_id, sender=sender, content=content, timestamp=current_time)
+            logger.info(f"Created message object for chat {chat_id}, timestamp: {message.timestamp}")
+            
+            db.add(message)
+            logger.info(f"Added message to db session for chat {chat_id}")
+            
+            # Log before commit
+            logger.info(f"About to commit for chat {chat_id}")
+            logger.info(f"Session dirty objects count: {len(db.dirty)}")
+            logger.info(f"Session new objects count: {len(db.new)}")
+            
+            # Use asyncio.wait_for to add timeout to commit
+            await asyncio.wait_for(db.commit(), timeout=10.0)
+            logger.info(f"Successfully committed message to database for chat {chat_id}")
+            return  # Success - exit the function
+            
+        except asyncio.TimeoutError:
+            logger.warning(f"Commit timeout on attempt {attempt + 1} for chat {chat_id}")
+            try:
+                await db.rollback()
+                logger.info(f"Rolled back after timeout for chat {chat_id}")
+            except Exception as rollback_error:
+                logger.error(f"Error during rollback after timeout for chat {chat_id}: {rollback_error}")
+            
+            if attempt < max_retries - 1:
+                logger.info(f"Will retry in {retry_delay} seconds...")
+                await asyncio.sleep(retry_delay)
+                retry_delay *= 2  # Exponential backoff
+            else:
+                logger.error(f"All {max_retries} attempts failed due to timeout for chat {chat_id}")
+                
+        except Exception as e:
+            logger.error(f"Error saving message for chat {chat_id} on attempt {attempt + 1}: {e}")
+            logger.error(f"Exception type: {type(e)}")
+            logger.error(f"Exception details: {str(e)}")
+            import traceback
+            logger.error(f"Full traceback: {traceback.format_exc()}")
+            try:
+                await db.rollback()
+                logger.info(f"Rolled back transaction for chat {chat_id}")
+            except Exception as rollback_error:
+                logger.error(f"Error during rollback for chat {chat_id}: {rollback_error}")
+            
+            if attempt < max_retries - 1:
+                logger.info(f"Will retry in {retry_delay} seconds...")
+                await asyncio.sleep(retry_delay)
+                retry_delay *= 2  # Exponential backoff
+            else:
+                logger.error(f"All {max_retries} attempts failed for chat {chat_id}")
+                # Don't re-raise the exception to allow finally block to complete
 
 async def perform_indexing_with_progress(doc_rag: 'DocumentRAG', chat_id: str):
     """
@@ -698,10 +725,11 @@ async def query_chat(
     
     # Variable to store the complete response for saving
     complete_response = {"content": ""}
+    message_saved = False  # Track if message was saved post-streaming
     
     async def stream_response():
         """Stream the LLM response"""
-        nonlocal complete_response
+        nonlocal complete_response, message_saved
         start_time = time.time()
         
         try:
@@ -731,7 +759,7 @@ async def query_chat(
             
             # Stream response from LLM
             async def message_generator():
-                nonlocal complete_response
+                nonlocal complete_response, message_saved
                 first_chunk = True
                 chunk_count = 0
                 
@@ -770,6 +798,18 @@ async def query_chat(
             async for chunk in stream_generator_as_sse(message_generator()):
                 yield chunk
             
+            # Save message immediately after streaming completes (before response closes)
+            logger.info(f"=== STREAMING COMPLETED - saving message for chat {chat_id} ===")
+            if complete_response["content"]:
+                try:
+                    logger.info(f"=== POST-STREAMING save for chat {chat_id}, content length: {len(complete_response['content'])} ===")
+                    async with SessionLocal() as db:
+                        await save_message(db, chat_id, "assistant", complete_response["content"])
+                        logger.info(f"=== POST-STREAMING save SUCCESS for chat {chat_id} ===")
+                    message_saved = True
+                except Exception as post_save_error:
+                    logger.error(f"=== POST-STREAMING save FAILED for chat {chat_id}: {post_save_error} ===")
+            
             # Log completion
             elapsed_time = time.time() - start_time
             query_type = "Code query" if is_code else "Query"
@@ -782,7 +822,7 @@ async def query_chat(
             async for chunk in stream_text_as_sse(error_text):
                 yield chunk
         finally:
-            logger.info(f"Stream response finally block for chat {chat_id}")
+            logger.info(f"=== ENTERING finally block for chat {chat_id} ===")
             
             # Log database pool status for debugging
             try:
@@ -791,24 +831,35 @@ async def query_chat(
             except Exception as pool_error:
                 logger.error(f"Error getting pool status: {pool_error}")
             
+            logger.info(f"complete_response content length: {len(complete_response['content'])}")
+            
             # Backup save if message wasn't saved during streaming (e.g., client disconnect)
-            if complete_response["content"]:
+            if complete_response["content"] and not message_saved:
                 try:
-                    logger.info(f"Saving assistant response for chat {chat_id}. Content length: {len(complete_response['content'])}")
+                    logger.info(f"=== STARTING backup save operation for chat {chat_id} ===")
                     async with SessionLocal() as db:
+                        logger.info(f"=== DATABASE SESSION CREATED for chat {chat_id} ===")
                         await save_message(db, chat_id, "assistant", complete_response["content"])
-                        logger.info(f"Assistant response saved successfully for chat {chat_id}")
+                        logger.info(f"=== BACKUP SAVE COMPLETED for chat {chat_id} ===")
                 except Exception as save_error:
-                    logger.error(f"Failed to save assistant response for chat {chat_id}: {save_error}")
+                    logger.error(f"=== BACKUP SAVE FAILED for chat {chat_id}: {save_error} ===")
+                    logger.error(f"Save error type: {type(save_error)}")
+                    logger.error(f"Save error details: {str(save_error)}")
+                    import traceback
+                    logger.error(f"Save error traceback: {traceback.format_exc()}")
+            elif message_saved:
+                logger.info(f"Message already saved post-streaming for chat {chat_id}, skipping backup save")
             else:
                 logger.warning(f"No content to save for chat {chat_id} - response content is empty")
             
             try:
-                logger.info(f"About to unregister active query for chat {chat_id}")
+                logger.info(f"=== UNREGISTERING query for chat {chat_id} ===")
                 unregister_active_query(chat_id)
-                logger.info(f"Unregistered active query for chat {chat_id}")
+                logger.info(f"=== UNREGISTERED query for chat {chat_id} ===")
             except Exception as unreg_error:
                 logger.error(f"Error unregistering query for chat {chat_id}: {unreg_error}")
+            
+            logger.info(f"=== EXITING finally block for chat {chat_id} ===")
     
     return StreamingResponse(
         stream_response(), 
