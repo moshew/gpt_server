@@ -31,7 +31,7 @@ engine = create_async_engine(
     # Increase pool size for better concurrency
     pool_size=20,  # Increased from 10
     max_overflow=10,  # Increased from 5
-    pool_timeout=30,  # Add timeout to avoid hanging forever
+    pool_timeout=10,  # Reduced from 30 to detect issues faster
     pool_pre_ping=True,  # Check connection validity before using
     pool_recycle=3600,  # Recycle connections after an hour to prevent stale connections
     future=True

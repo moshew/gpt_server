@@ -126,6 +126,14 @@ async def get_chat_data(
         
         async def db_operations():
             logger.info(f"Creating database session for chat {chat_id}")
+            # Log database pool status
+            try:
+                from ..database import get_engine_status
+                pool_status = await get_engine_status()
+                logger.info(f"DB Pool status before session for chat {chat_id}: {pool_status}")
+            except Exception as pool_err:
+                logger.warning(f"Could not get pool status for chat {chat_id}: {pool_err}")
+            
             async with SessionLocal() as db:
                 logger.info(f"Database session created, checking chat ownership for chat {chat_id}")
                 
@@ -164,8 +172,24 @@ async def get_chat_data(
         try:
             chat, messages, files = await asyncio.wait_for(db_operations(), timeout=timeout_duration)
             logger.info(f"Database operations completed for chat {chat_id} in {time.time() - start_time:.2f}s")
+            
+            # Log database pool status after completion
+            try:
+                from ..database import get_engine_status
+                pool_status_after = await get_engine_status()
+                logger.info(f"DB Pool status after completion for chat {chat_id}: {pool_status_after}")
+            except Exception as pool_err:
+                logger.warning(f"Could not get pool status after completion for chat {chat_id}: {pool_err}")
+                
         except asyncio.TimeoutError:
             logger.error(f"Database operations timed out after {timeout_duration}s for chat {chat_id}")
+            # Log pool status during timeout
+            try:
+                from ..database import get_engine_status
+                pool_status_timeout = await get_engine_status()
+                logger.error(f"DB Pool status during timeout for chat {chat_id}: {pool_status_timeout}")
+            except Exception as pool_err:
+                logger.warning(f"Could not get pool status during timeout for chat {chat_id}: {pool_err}")
             raise HTTPException(status_code=504, detail=f"Request timed out after {timeout_duration} seconds")
         
         logger.info(f"Processing file separation for chat {chat_id}")
