@@ -838,25 +838,7 @@ async def query_chat(
                 logger.error(f"Error getting pool status: {pool_error}")
             
             logger.info(f"complete_response content length: {len(complete_response['content'])}")
-            
-            # Backup save if message wasn't saved during streaming (e.g., client disconnect)
-            if complete_response["content"] and not message_saved:
-                try:
-                    logger.info(f"=== STARTING backup save operation for chat {chat_id} ===")
-                    async with SessionLocal() as db:
-                        logger.info(f"=== DATABASE SESSION CREATED for chat {chat_id} ===")
-                        await save_message(db, chat_id, "assistant", complete_response["content"])
-                        logger.info(f"=== BACKUP SAVE COMPLETED for chat {chat_id} ===")
-                except Exception as save_error:
-                    logger.error(f"=== BACKUP SAVE FAILED for chat {chat_id}: {save_error} ===")
-                    logger.error(f"Save error type: {type(save_error)}")
-                    logger.error(f"Save error details: {str(save_error)}")
-                    import traceback
-                    logger.error(f"Save error traceback: {traceback.format_exc()}")
-            elif message_saved:
-                logger.info(f"Message already saved post-streaming for chat {chat_id}, skipping backup save")
-            else:
-                logger.warning(f"No content to save for chat {chat_id} - response content is empty")
+            logger.info(f"Message saving handled by background task for chat {chat_id}")
             
             try:
                 logger.info(f"=== UNREGISTERING query for chat {chat_id} ===")
