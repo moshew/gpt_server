@@ -734,6 +734,7 @@ async def query_chat(
                 nonlocal complete_response
                 first_chunk = True
                 chunk_count = 0
+                
                 async for content in await process_langchain_messages(
                     messages=conversation,
                     model_config="default",
@@ -762,6 +763,8 @@ async def query_chat(
                     yield content
                 
                 logger.info(f"Streaming completed for chat {chat_id}. Total chunks: {chunk_count}, Content length: {len(complete_response['content'])}")
+                
+                # Message saving will be handled in finally block
             
             # Stream to client
             async for chunk in stream_generator_as_sse(message_generator()):
@@ -788,36 +791,15 @@ async def query_chat(
             except Exception as pool_error:
                 logger.error(f"Error getting pool status: {pool_error}")
             
-            # Always save the complete response at the end
-            logger.info(f"Attempting to save response for chat {chat_id}. Content length: {len(complete_response['content'])}")
+            # Backup save if message wasn't saved during streaming (e.g., client disconnect)
             if complete_response["content"]:
-                # Use shield to protect the save operation from cancellation
-                async def save_response():
-                    try:
-                        logger.info(f"About to create database session for chat {chat_id}")
-                        async with SessionLocal() as db:
-                            logger.info(f"Database session created for chat {chat_id}")
-                            
-                            # Save the message
-                            logger.info(f"Starting save_message for chat {chat_id}")
-                            await save_message(db, chat_id, "assistant", complete_response["content"])
-                            logger.info(f"Assistant response saved successfully for chat {chat_id}. Content length: {len(complete_response['content'])}")
-                    except Exception as save_error:
-                        logger.error(f"Failed to save assistant response for chat {chat_id}: {save_error}")
-                        logger.error(f"Save error type: {type(save_error)}")
-                        logger.error(f"Save error details: {str(save_error)}")
-                        import traceback
-                        logger.error(f"Save error traceback: {traceback.format_exc()}")
-                
-                # Shield the save operation from cancellation
                 try:
-                    await asyncio.shield(save_response())
-                except asyncio.CancelledError:
-                    logger.warning(f"Request was cancelled but save operation should continue for chat {chat_id}")
-                    # Create a fire-and-forget task to complete the save
-                    asyncio.create_task(save_response())
-                except Exception as shield_error:
-                    logger.error(f"Error in shielded save operation for chat {chat_id}: {shield_error}")
+                    logger.info(f"Saving assistant response for chat {chat_id}. Content length: {len(complete_response['content'])}")
+                    async with SessionLocal() as db:
+                        await save_message(db, chat_id, "assistant", complete_response["content"])
+                        logger.info(f"Assistant response saved successfully for chat {chat_id}")
+                except Exception as save_error:
+                    logger.error(f"Failed to save assistant response for chat {chat_id}: {save_error}")
             else:
                 logger.warning(f"No content to save for chat {chat_id} - response content is empty")
             
