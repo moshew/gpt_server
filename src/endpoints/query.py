@@ -225,41 +225,24 @@ async def save_message(db: AsyncSession, chat_id: int, sender: str, content: str
     
     for attempt in range(max_retries):
         try:
-            logger.info(f"Starting to save message for chat {chat_id}, sender: {sender}, content length: {len(content)} (attempt {attempt + 1}/{max_retries})")
-            logger.info(f"Content encoding check - is valid UTF-8: {content.encode('utf-8', errors='ignore').decode('utf-8') == content}")
-            
-            # Check database connection status before proceeding
-            logger.info(f"Database session info: {type(db)}")
-            logger.info(f"Database session bind: {db.bind}")
-            
             # Create message with explicit timestamp
             current_time = datetime.datetime.utcnow()
             message = Message(chat_id=chat_id, sender=sender, content=content, timestamp=current_time)
-            logger.info(f"Created message object for chat {chat_id}, timestamp: {message.timestamp}")
             
             db.add(message)
-            logger.info(f"Added message to db session for chat {chat_id}")
-            
-            # Log before commit
-            logger.info(f"About to commit for chat {chat_id}")
-            logger.info(f"Session dirty objects count: {len(db.dirty)}")
-            logger.info(f"Session new objects count: {len(db.new)}")
             
             # Use asyncio.wait_for to add timeout to commit
             await asyncio.wait_for(db.commit(), timeout=10.0)
-            logger.info(f"Successfully committed message to database for chat {chat_id}")
             return  # Success - exit the function
             
         except asyncio.TimeoutError:
             logger.warning(f"Commit timeout on attempt {attempt + 1} for chat {chat_id}")
             try:
                 await db.rollback()
-                logger.info(f"Rolled back after timeout for chat {chat_id}")
             except Exception as rollback_error:
                 logger.error(f"Error during rollback after timeout for chat {chat_id}: {rollback_error}")
             
             if attempt < max_retries - 1:
-                logger.info(f"Will retry in {retry_delay} seconds...")
                 await asyncio.sleep(retry_delay)
                 retry_delay *= 2  # Exponential backoff
             else:
@@ -267,18 +250,12 @@ async def save_message(db: AsyncSession, chat_id: int, sender: str, content: str
                 
         except Exception as e:
             logger.error(f"Error saving message for chat {chat_id} on attempt {attempt + 1}: {e}")
-            logger.error(f"Exception type: {type(e)}")
-            logger.error(f"Exception details: {str(e)}")
-            import traceback
-            logger.error(f"Full traceback: {traceback.format_exc()}")
             try:
                 await db.rollback()
-                logger.info(f"Rolled back transaction for chat {chat_id}")
             except Exception as rollback_error:
                 logger.error(f"Error during rollback for chat {chat_id}: {rollback_error}")
             
             if attempt < max_retries - 1:
-                logger.info(f"Will retry in {retry_delay} seconds...")
                 await asyncio.sleep(retry_delay)
                 retry_delay *= 2  # Exponential backoff
             else:
@@ -301,6 +278,13 @@ async def perform_indexing_with_progress(doc_rag: 'DocumentRAG', chat_id: str):
         start_message = "###PROC_INFO: Indexing uploaded documents...###"
         yield f"data: {start_message}\n\n"
         
+        # Check for cancellation before starting indexing
+        if should_cancel_query(chat_id):
+            logger.info(f"Indexing cancelled before start for chat {chat_id}")
+            end_message = "###PROC_INFO:###"
+            yield f"data: {end_message}\n\n"
+            return
+        
         # Perform actual indexing
         result = await doc_rag.index_documents(chat_id)
         
@@ -315,6 +299,21 @@ async def perform_indexing_with_progress(doc_rag: 'DocumentRAG', chat_id: str):
         # Send error completion message - raw SSE format without [DONE]
         error_message = "###PROC_INFO:###"
         yield f"data: {error_message}\n\n"
+    finally:
+        # Clean up indexing lock if query was cancelled or failed
+        try:
+            rag_folder = doc_rag._get_rag_storage_folder(str(chat_id))
+            lock_file = os.path.join(rag_folder, "indexing.lock")
+            
+            if os.path.exists(lock_file) and should_cancel_query(chat_id):
+                try:
+                    os.remove(lock_file)
+                    logger.info(f"Cleaned up indexing lock file after cancellation for chat {chat_id}")
+                except Exception as lock_cleanup_error:
+                    logger.error(f"Error cleaning up indexing lock after cancellation for chat {chat_id}: {lock_cleanup_error}")
+        except Exception as cleanup_error:
+            # Don't log this as error since it's best effort cleanup
+            pass
 
 # Endpoint to stop an active query
 @app.post("/stop_query/{chat_id}")
@@ -352,6 +351,22 @@ async def stop_query(
                     active_queries[chat_id_str]["task"].cancel()
                 except Exception as e:
                     logger.error(f"Error cancelling task: {e}")
+            
+            # Clean up any indexing lock files when stopping a query
+            try:
+                doc_rag = get_document_rag(chat_id_str)
+                rag_folder = doc_rag._get_rag_storage_folder(chat_id_str)
+                lock_file = os.path.join(rag_folder, "indexing.lock")
+                
+                if os.path.exists(lock_file):
+                    try:
+                        os.remove(lock_file)
+                        logger.info(f"Cleaned up indexing lock file for chat {chat_id} during stop_query")
+                    except Exception as lock_cleanup_error:
+                        logger.error(f"Error cleaning up indexing lock during stop_query for chat {chat_id}: {lock_cleanup_error}")
+            except Exception as cleanup_error:
+                # Don't log this as error since it's best effort cleanup
+                pass
             
             return {"message": "Query stop signal sent successfully"}
         else:
@@ -799,22 +814,19 @@ async def query_chat(
                 yield chunk
             
             # Save message immediately after streaming completes (before response closes)
-            logger.info(f"=== STREAMING COMPLETED - saving message for chat {chat_id} ===")
             if complete_response["content"]:
                 # Create a background task that won't be cancelled when request ends
                 async def background_save_task():
                     try:
-                        logger.info(f"=== BACKGROUND save task started for chat {chat_id}, content length: {len(complete_response['content'])} ===")
                         async with SessionLocal() as db:
                             await save_message(db, chat_id, "assistant", complete_response["content"])
-                            logger.info(f"=== BACKGROUND save SUCCESS for chat {chat_id} ===")
+                            logger.info(f"Assistant response saved successfully for chat {chat_id}")
                     except Exception as bg_save_error:
-                        logger.error(f"=== BACKGROUND save FAILED for chat {chat_id}: {bg_save_error} ===")
+                        logger.error(f"Failed to save assistant response for chat {chat_id}: {bg_save_error}")
                 
                 # Start the background task and don't wait for it
                 asyncio.create_task(background_save_task())
                 message_saved = True
-                logger.info(f"=== BACKGROUND save task created for chat {chat_id} ===")
             
             # Log completion
             elapsed_time = time.time() - start_time
@@ -828,26 +840,26 @@ async def query_chat(
             async for chunk in stream_text_as_sse(error_text):
                 yield chunk
         finally:
-            logger.info(f"=== ENTERING finally block for chat {chat_id} ===")
-            
-            # Log database pool status for debugging
             try:
-                pool_status = await get_engine_status()
-                logger.info(f"Database pool status: {pool_status}")
-            except Exception as pool_error:
-                logger.error(f"Error getting pool status: {pool_error}")
-            
-            logger.info(f"complete_response content length: {len(complete_response['content'])}")
-            logger.info(f"Message saving handled by background task for chat {chat_id}")
-            
-            try:
-                logger.info(f"=== UNREGISTERING query for chat {chat_id} ===")
                 unregister_active_query(chat_id)
-                logger.info(f"=== UNREGISTERED query for chat {chat_id} ===")
             except Exception as unreg_error:
                 logger.error(f"Error unregistering query for chat {chat_id}: {unreg_error}")
             
-            logger.info(f"=== EXITING finally block for chat {chat_id} ===")
+            # Clean up any indexing lock files if the query was cancelled
+            try:
+                doc_rag = get_document_rag(str(chat_id))
+                rag_folder = doc_rag._get_rag_storage_folder(str(chat_id))
+                lock_file = os.path.join(rag_folder, "indexing.lock")
+                
+                if os.path.exists(lock_file):
+                    try:
+                        os.remove(lock_file)
+                        logger.info(f"Cleaned up indexing lock file for chat {chat_id}")
+                    except Exception as lock_cleanup_error:
+                        logger.error(f"Error cleaning up indexing lock for chat {chat_id}: {lock_cleanup_error}")
+            except Exception as cleanup_error:
+                # Don't log this as error since it's best effort cleanup
+                pass
     
     return StreamingResponse(
         stream_response(), 
