@@ -18,6 +18,7 @@ import os
 import json
 import logging
 import base64
+import datetime
 
 from typing import Optional, List
 from fastapi import Depends, BackgroundTasks, HTTPException, Query, File, UploadFile, Form, Request
@@ -228,7 +229,9 @@ async def save_message(db: AsyncSession, chat_id: int, sender: str, content: str
         logger.info(f"Database session info: {type(db)}")
         logger.info(f"Database session bind: {db.bind}")
         
-        message = Message(chat_id=chat_id, sender=sender, content=content)
+        # Create message with explicit timestamp
+        current_time = datetime.datetime.utcnow()
+        message = Message(chat_id=chat_id, sender=sender, content=content, timestamp=current_time)
         logger.info(f"Created message object for chat {chat_id}, timestamp: {message.timestamp}")
         
         db.add(message)

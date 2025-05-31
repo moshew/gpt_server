@@ -67,7 +67,7 @@ class Chat(Base):
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id"))
     chat_name = Column(String)
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.datetime.utcnow())
     keep_original_files = Column(Boolean, default=False)
 
 # Message model to store conversation history
@@ -77,7 +77,7 @@ class Message(Base):
     chat_id = Column(Integer, ForeignKey("chats.id"))
     sender = Column(String)  # "user" or "assistant"
     content = Column(Text)
-    timestamp = Column(DateTime, default=datetime.datetime.utcnow)
+    timestamp = Column(DateTime, default=lambda: datetime.datetime.utcnow())
 
 # File model to store chat files
 class File(Base):
