@@ -357,12 +357,9 @@ async def _get_session_data(session_id: str, chat_id: int) -> tuple[Optional[str
     if not session_id:
         return None, []
     
-    logger.info(f"Processing query with session_id: {session_id} for chat {chat_id}")
-    
     session = pending_queries.get(session_id)
     if not session:
-        # Only clean up if session not found - might be expired
-        logger.error(f"Session {session_id} not found. Available sessions: {list(pending_queries.keys())}")
+        logger.error(f"Session {session_id} not found")
         raise HTTPException(status_code=400, detail="Invalid or expired session_id")
         
     # Verify chat_id matches
@@ -381,7 +378,6 @@ async def _get_session_data(session_id: str, chat_id: int) -> tuple[Optional[str
         
     query = session["query"]
     image_contents = session.get("images", [])
-    logger.info(f"Using session {session_id} with query='{query}' and {len(image_contents)} images")
     
     return query, image_contents
 
@@ -404,7 +400,6 @@ def _prepare_image_messages(image_contents: List[dict], chat_id: int) -> List[st
                 "format": img["content_type"]
             })
             img_json_messages.append(img_json)
-            logger.info(f"Prepared image message for chat {chat_id}")
         except Exception as e:
             logger.error(f"Error preparing image message: {e}")
     
@@ -449,13 +444,11 @@ async def _get_document_context(
     try:
         if is_code:
             # Use code context for code-specific queries
-            logger.info(f"Using code context for chat {chat_id}")
             code_context = get_code_context(chat_id)
             document_context = code_context if code_context else ""
                 
         elif kb_name:
             # Use specified knowledge base
-            logger.info(f"Using knowledge base: {kb_name} for chat {chat_id}")
             document_context = await get_document_context(
                 kb_name, query, top_k=5, keep_original_files=False, source_type="kb"
             )
@@ -468,7 +461,6 @@ async def _get_document_context(
             
         # Add web search context if requested (not for code queries or original files)
         if web_search and query and not is_code and not keep_original_files:
-            logger.info(f"Web search requested for chat {chat_id}")
             async with SessionLocal() as db:
                 web_context = await web_search_handler.get_document_context(
                     db=db, chat_id=str(chat_id), query=query, top_k=5
@@ -605,8 +597,6 @@ async def start_query_session(
         "images": []
     }
     
-    logger.info(f"Creating new session {session_id} for chat {chat_id} with query='{query}' and {len(images) if images else 0} images")
-    
     # Process and store images in session
     if images:
         for img in images:
@@ -630,12 +620,10 @@ async def start_query_session(
                     
                     # Reset file pointer
                     await img.seek(0)
-                    logger.info(f"Processed image {img.filename} for session {session_id}")
                 except Exception as e:
                     logger.error(f"Error processing image {img.filename} in session {session_id}: {e}")
     
     pending_queries[session_id] = session_data
-    logger.info(f"Session {session_id} created successfully. Total pending sessions: {len(pending_queries)}")
     
     return {"session_id": session_id}
 
@@ -719,11 +707,9 @@ async def query_chat(
                 doc_rag = get_document_rag(str(chat_id))
                 indexing_needed = await doc_rag.check_indexing_needed(str(chat_id))
                 if indexing_needed:
-                    logger.info(f"Indexing needed for chat {chat_id}, performing indexing...")
                     # Stream indexing progress messages
                     async for indexing_chunk in perform_indexing_with_progress(doc_rag, str(chat_id)):
                         yield indexing_chunk
-                    logger.info(f"Indexing completed for chat {chat_id}")
             
             # Parse source and get document context after potential indexing
             is_code, kb_name, web_search = _parse_source(source)
@@ -760,9 +746,8 @@ async def query_chat(
                     if first_chunk and session_id and session_id in pending_queries:
                         try:
                             del pending_queries[session_id]
-                            logger.info(f"Removed session {session_id} from pending_queries after first chunk")
                         except KeyError:
-                            logger.warning(f"Session {session_id} was already removed from pending_queries")
+                            pass  # Session already removed
                         first_chunk = False
                     
                     # Accumulate response content
@@ -771,7 +756,10 @@ async def query_chat(
                     
                     yield content
                 
-                logger.info(f"Streaming completed for chat {chat_id}. Total chunks: {chunk_count}, Content length: {len(complete_response['content'])}")
+                # Only log if there were significant chunks or it took a long time
+                elapsed = time.time() - start_time
+                if chunk_count > 100 or elapsed > 5.0:
+                    logger.info(f"Streaming completed for chat {chat_id}. Total chunks: {chunk_count}, Content length: {len(complete_response['content'])}")
                 
                 # Message saving will be handled in finally block
             
@@ -786,7 +774,6 @@ async def query_chat(
                     try:
                         async with SessionLocal() as db:
                             await save_message(db, chat_id, "assistant", complete_response["content"])
-                            logger.info(f"Assistant response saved successfully for chat {chat_id}")
                     except Exception as bg_save_error:
                         logger.error(f"Failed to save assistant response for chat {chat_id}: {bg_save_error}")
                 
@@ -794,10 +781,11 @@ async def query_chat(
                 asyncio.create_task(background_save_task())
                 message_saved = True
             
-            # Log completion
+            # Log completion for slow queries only
             elapsed_time = time.time() - start_time
-            query_type = "Code query" if is_code else "Query"
-            logger.info(f"{query_type} processed in {elapsed_time:.2f} seconds")
+            if elapsed_time > 3.0:  # Only log slow queries
+                query_type = "Code query" if is_code else "Query"
+                logger.info(f"{query_type} processed in {elapsed_time:.2f} seconds")
             
         except Exception as e:
             logger.error(f"Error in stream_response for chat {chat_id}: {e}")
@@ -927,7 +915,6 @@ async def query_image(
                 
                 async with SessionLocal() as db:
                     await save_message(db, chat_id, "assistant", message_content)
-                    logger.info(f"Assistant image response saved successfully for chat {chat_id}")
         except Exception as save_error:
             logger.error(f"Failed to save assistant image response for chat {chat_id}: {save_error}")
         

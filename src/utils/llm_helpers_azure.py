@@ -113,15 +113,14 @@ async def embed_documents(texts: List[str]) -> List[List[float]]:
     """
     # Check if we need to wait for rate limiting
     if _embedding_semaphore.locked():
-        logger.info(f"Embedding rate limiting active - waiting for available slot for {len(texts)} documents")
+        logger.warning(f"Embedding rate limiting active - waiting for available slot for {len(texts)} documents")
     
     async with _embedding_semaphore:  # Rate limiting for embeddings
-        logger.debug(f"Acquired embedding semaphore slot for {len(texts)} documents")
         try:
             embeddings = get_embeddings()
             return await run_in_executor(embeddings.embed_documents, texts)
         finally:
-            logger.debug("Released embedding semaphore slot")
+            pass
 
 async def embed_query(text: str) -> List[float]:
     """
@@ -135,15 +134,14 @@ async def embed_query(text: str) -> List[float]:
     """
     # Check if we need to wait for rate limiting
     if _embedding_semaphore.locked():
-        logger.info("Embedding rate limiting active - waiting for available slot for query")
+        logger.warning("Embedding rate limiting active - waiting for available slot for query")
     
     async with _embedding_semaphore:  # Rate limiting for embeddings
-        logger.debug("Acquired embedding semaphore slot for query")
         try:
             embeddings = get_embeddings()
             return await run_in_executor(embeddings.embed_query, text)
         finally:
-            logger.debug("Released embedding semaphore slot")
+            pass
 
 async def call_llm(
     prompt: str = None,
@@ -168,10 +166,9 @@ async def call_llm(
     
     # Check if we need to wait for rate limiting
     if _openai_semaphore.locked():
-        logger.info("Rate limiting active - waiting for available slot for LLM call")
+        logger.warning("Rate limiting active - waiting for available slot for LLM call")
     
     async with _openai_semaphore:  # Rate limiting
-        logger.debug("Acquired LLM semaphore slot")
         try:
             # Get the base configuration
             config = MODEL_CONFIGS.get(model_config, MODEL_CONFIGS["default"]).copy()
@@ -231,7 +228,7 @@ async def call_llm(
             else:
                 return error_msg
         finally:
-            logger.debug("Released LLM semaphore slot")
+            pass
 
 async def _stream_messages_response(
     client, messages: List[Dict[str, str]], deployment_name: str, temperature: float, max_tokens: int, **kwargs
