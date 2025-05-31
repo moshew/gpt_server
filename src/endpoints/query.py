@@ -245,11 +245,6 @@ async def save_message(db: AsyncSession, chat_id: int, sender: str, content: str
         await db.commit()
         logger.info(f"Successfully committed message to database for chat {chat_id}")
         
-    except asyncio.CancelledError:
-        logger.warning(f"Save message operation was cancelled for chat {chat_id}")
-        # Don't try to rollback if cancelled, just let it be
-        # Don't re-raise to avoid propagating cancellation error
-        return  # Exit gracefully without saving
     except Exception as e:
         logger.error(f"Error saving message for chat {chat_id}: {e}")
         logger.error(f"Exception type: {type(e)}")
@@ -259,11 +254,9 @@ async def save_message(db: AsyncSession, chat_id: int, sender: str, content: str
         try:
             await db.rollback()
             logger.info(f"Rolled back transaction for chat {chat_id}")
-        except asyncio.CancelledError:
-            logger.warning(f"Rollback was also cancelled for chat {chat_id} - this is expected")
         except Exception as rollback_error:
             logger.error(f"Error during rollback for chat {chat_id}: {rollback_error}")
-        raise  # Re-raise the exception so it's caught by the calling code
+        # Don't re-raise the exception to allow finally block to complete
 
 async def perform_indexing_with_progress(doc_rag: 'DocumentRAG', chat_id: str):
     """
@@ -798,24 +791,33 @@ async def query_chat(
             # Always save the complete response at the end
             logger.info(f"Attempting to save response for chat {chat_id}. Content length: {len(complete_response['content'])}")
             if complete_response["content"]:
+                # Use shield to protect the save operation from cancellation
+                async def save_response():
+                    try:
+                        logger.info(f"About to create database session for chat {chat_id}")
+                        async with SessionLocal() as db:
+                            logger.info(f"Database session created for chat {chat_id}")
+                            
+                            # Save the message
+                            logger.info(f"Starting save_message for chat {chat_id}")
+                            await save_message(db, chat_id, "assistant", complete_response["content"])
+                            logger.info(f"Assistant response saved successfully for chat {chat_id}. Content length: {len(complete_response['content'])}")
+                    except Exception as save_error:
+                        logger.error(f"Failed to save assistant response for chat {chat_id}: {save_error}")
+                        logger.error(f"Save error type: {type(save_error)}")
+                        logger.error(f"Save error details: {str(save_error)}")
+                        import traceback
+                        logger.error(f"Save error traceback: {traceback.format_exc()}")
+                
+                # Shield the save operation from cancellation
                 try:
-                    logger.info(f"About to create database session for chat {chat_id}")
-                    async with SessionLocal() as db:
-                        logger.info(f"Database session created for chat {chat_id}")
-                        
-                        # Save without timeout to avoid cancellation issues
-                        logger.info(f"Starting save_message for chat {chat_id}")
-                        await save_message(db, chat_id, "assistant", complete_response["content"])
-                        logger.info(f"Assistant response saved successfully for chat {chat_id}. Content length: {len(complete_response['content'])}")
+                    await asyncio.shield(save_response())
                 except asyncio.CancelledError:
-                    logger.warning(f"Save operation was cancelled for chat {chat_id} - this is expected if user stopped the query")
-                    # Don't re-raise CancelledError to avoid propagation
-                except Exception as save_error:
-                    logger.error(f"Failed to save assistant response for chat {chat_id}: {save_error}")
-                    logger.error(f"Save error type: {type(save_error)}")
-                    logger.error(f"Save error details: {str(save_error)}")
-                    import traceback
-                    logger.error(f"Save error traceback: {traceback.format_exc()}")
+                    logger.warning(f"Request was cancelled but save operation should continue for chat {chat_id}")
+                    # Create a fire-and-forget task to complete the save
+                    asyncio.create_task(save_response())
+                except Exception as shield_error:
+                    logger.error(f"Error in shielded save operation for chat {chat_id}: {shield_error}")
             else:
                 logger.warning(f"No content to save for chat {chat_id} - response content is empty")
             
