@@ -73,11 +73,11 @@ def get_openai_client():
     Get or create a global Azure OpenAI client instance
     
     Returns:
-        OpenAI client instance configured for Azure
+        AsyncAzureOpenAI client instance configured for Azure
     """
     global _openai_client
     if _openai_client is None:
-        _openai_client = openai.AzureOpenAI(
+        _openai_client = openai.AsyncAzureOpenAI(
             api_key=AZURE_API_KEY,
             api_version=AZURE_API_VERSION,
             azure_endpoint=AZURE_ENDPOINT
@@ -218,7 +218,7 @@ async def call_llm(
                 return _stream_messages_response(client, messages, deployment_name, temperature, max_tokens, **config)
             else:
                 # For non-streaming, get the complete response
-                response = client.chat.completions.create(**api_params)
+                response = await client.chat.completions.create(**api_params)
                 return response.choices[0].message.content
                 
         except Exception as e:
@@ -261,9 +261,9 @@ async def _stream_messages_response(
         filtered_kwargs = {k: v for k, v in kwargs.items() if k in ALLOWED_PARAMS[model_type]}
         api_params.update(filtered_kwargs)
         
-        response_stream = client.chat.completions.create(**api_params)
+        response_stream = await client.chat.completions.create(**api_params)
         
-        for chunk in response_stream:
+        async for chunk in response_stream:
             if chunk.choices and chunk.choices[0].delta and chunk.choices[0].delta.content:
                 yield chunk.choices[0].delta.content
                 await asyncio.sleep(0)  # Allow other tasks to run
