@@ -30,7 +30,7 @@ from langchain_core.chat_history import InMemoryChatMessageHistory
 
 from ..app_init import app
 from ..auth import get_user_from_token, verify_chat_owner, verify_chat_ownership
-from ..database import SessionLocal
+from ..database import SessionLocal, get_engine_status
 from ..utils import process_langchain_messages
 from ..utils.sse import stream_text_as_sse, stream_generator_as_sse
 from ..query_docs import get_document_context, get_document_rag
@@ -221,19 +221,33 @@ async def save_message(db: AsyncSession, chat_id: int, sender: str, content: str
     """
     try:
         logger.info(f"Starting to save message for chat {chat_id}, sender: {sender}, content length: {len(content)}")
+        logger.info(f"Content preview (first 200 chars): {content[:200]}...")
+        logger.info(f"Content encoding check - is valid UTF-8: {content.encode('utf-8', errors='ignore').decode('utf-8') == content}")
+        
+        # Check database connection status before proceeding
+        logger.info(f"Database session info: {type(db)}")
+        logger.info(f"Database session bind: {db.bind}")
+        
         message = Message(chat_id=chat_id, sender=sender, content=content)
-        logger.info(f"Created message object for chat {chat_id}")
+        logger.info(f"Created message object for chat {chat_id}, timestamp: {message.timestamp}")
         
         db.add(message)
         logger.info(f"Added message to db session for chat {chat_id}")
         
+        # Log before commit
+        logger.info(f"About to commit for chat {chat_id}")
+        logger.info(f"Session dirty objects count: {len(db.dirty)}")
+        logger.info(f"Session new objects count: {len(db.new)}")
+        
         await db.commit()
-        logger.info(f"Committed message to database for chat {chat_id}")
+        logger.info(f"Successfully committed message to database for chat {chat_id}")
         
     except Exception as e:
         logger.error(f"Error saving message for chat {chat_id}: {e}")
         logger.error(f"Exception type: {type(e)}")
         logger.error(f"Exception details: {str(e)}")
+        import traceback
+        logger.error(f"Full traceback: {traceback.format_exc()}")
         try:
             await db.rollback()
             logger.info(f"Rolled back transaction for chat {chat_id}")
@@ -763,6 +777,14 @@ async def query_chat(
                 yield chunk
         finally:
             logger.info(f"Stream response finally block for chat {chat_id}")
+            
+            # Log database pool status for debugging
+            try:
+                pool_status = await get_engine_status()
+                logger.info(f"Database pool status: {pool_status}")
+            except Exception as pool_error:
+                logger.error(f"Error getting pool status: {pool_error}")
+            
             # Always save the complete response at the end
             logger.info(f"Attempting to save response for chat {chat_id}. Content length: {len(complete_response['content'])}")
             if complete_response["content"]:
@@ -770,8 +792,16 @@ async def query_chat(
                     logger.info(f"About to create database session for chat {chat_id}")
                     async with SessionLocal() as db:
                         logger.info(f"Database session created for chat {chat_id}")
-                        await save_message(db, chat_id, "assistant", complete_response["content"])
+                        
+                        # Add timeout to the save operation to detect hanging
+                        logger.info(f"Starting save_message with 30 second timeout for chat {chat_id}")
+                        await asyncio.wait_for(
+                            save_message(db, chat_id, "assistant", complete_response["content"]), 
+                            timeout=30.0
+                        )
                         logger.info(f"Assistant response saved successfully for chat {chat_id}. Content length: {len(complete_response['content'])}")
+                except asyncio.TimeoutError:
+                    logger.error(f"TIMEOUT: save_message took longer than 30 seconds for chat {chat_id}")
                 except Exception as save_error:
                     logger.error(f"Failed to save assistant response for chat {chat_id}: {save_error}")
                     logger.error(f"Save error type: {type(save_error)}")
