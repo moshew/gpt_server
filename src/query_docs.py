@@ -10,19 +10,22 @@ This module:
 """
 
 import os
-import time
-import pickle
 import asyncio
-import datetime
-import shutil
-import json
+import aiofiles
+import aiofiles.os  
+import aiofiles.ospath
+import time
 import logging
+import pickle
+import numpy as np
+import faiss
+import datetime
 from typing import Dict, List, Optional, Tuple, Any
 from functools import partial
 
 from .utils import run_in_executor
-import numpy as np
-import faiss
+import uuid
+import base64
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.docstore.document import Document
 from langchain_community.document_loaders import (
@@ -36,11 +39,6 @@ from fastapi import UploadFile, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .utils import embed_documents, embed_query
-
-# Import aiofiles for async file operations
-import aiofiles
-import aiofiles.os
-import aiofiles.ospath
 
 # Define path for knowledge bases
 KNOWLEDGE_BASE_DIR = os.environ.get("KNOWLEDGE_BASE_DIR", "data/knowledgebase")
@@ -215,12 +213,13 @@ class DocumentRAG:
                 "dimension": dimension  # Store dimension info
             }, f)
     
-    async def index_documents(self, chat_id: str) -> Dict:
+    async def index_documents(self, chat_id: str, cancellation_check: Optional[callable] = None) -> Dict:
         """
         Index all documents for a specific chat with better error handling
         
         Args:
             chat_id: Chat identifier
+            cancellation_check: Optional callback function to check if indexing should be cancelled
             
         Returns:
             Indexing results (only after all operations are complete)
@@ -260,6 +259,11 @@ class DocumentRAG:
             # Continue anyway
         
         try:
+            # Check for cancellation before starting
+            if cancellation_check and cancellation_check():
+                logger.info(f"Indexing cancelled before start for chat {chat_id}")
+                return {"message": "Indexing cancelled"}
+            
             # List all document files in the folder recursively using run_in_executor
             def find_all_files():
                 all_files = []
@@ -299,6 +303,11 @@ class DocumentRAG:
             failed_files = []
             
             for file_info in file_info_list:
+                # Check for cancellation during file processing
+                if cancellation_check and cancellation_check():
+                    logger.info(f"Indexing cancelled during file processing for chat {chat_id}")
+                    return {"message": "Indexing cancelled"}
+                
                 try:
                     file_path = file_info["full_path"]
                     relative_path = file_info["relative_path"]
@@ -334,6 +343,11 @@ class DocumentRAG:
                     await aiofiles.os.remove(lock_file)
                 return {"message": "No content could be extracted from documents", "failed_files": failed_files}
             
+            # Check for cancellation before chunking
+            if cancellation_check and cancellation_check():
+                logger.info(f"Indexing cancelled before chunking for chat {chat_id}")
+                return {"message": "Indexing cancelled"}
+            
             logger.info(f"Splitting {len(all_docs)} documents into chunks...")
             # Split documents into chunks using run_in_executor - WAIT for completion
             text_splitter = RecursiveCharacterTextSplitter(
@@ -347,6 +361,11 @@ class DocumentRAG:
             # Yield control back to the event loop
             await asyncio.sleep(0)
             
+            # Check for cancellation before creating embeddings
+            if cancellation_check and cancellation_check():
+                logger.info(f"Indexing cancelled before embeddings for chat {chat_id}")
+                return {"message": "Indexing cancelled"}
+            
             # Create document store
             doc_store = {}
             for i, chunk in enumerate(chunks):
@@ -355,6 +374,10 @@ class DocumentRAG:
                 # Yield control every 100 chunks
                 if i % 100 == 0:
                     await asyncio.sleep(0)
+                    # Check for cancellation periodically during doc store creation
+                    if cancellation_check and cancellation_check():
+                        logger.info(f"Indexing cancelled during doc store creation for chat {chat_id}")
+                        return {"message": "Indexing cancelled"}
             
             # Generate embeddings
             texts = [chunk.page_content for chunk in chunks]
@@ -367,6 +390,11 @@ class DocumentRAG:
             # Yield control back to the event loop
             await asyncio.sleep(0)
             
+            # Check for cancellation before creating FAISS index
+            if cancellation_check and cancellation_check():
+                logger.info(f"Indexing cancelled before FAISS index creation for chat {chat_id}")
+                return {"message": "Indexing cancelled"}
+            
             # Create FAISS index optimized for high-dimensional vectors
             dimension = len(embeddings_list[0])
             
@@ -378,6 +406,11 @@ class DocumentRAG:
             
             # Yield control back to the event loop
             await asyncio.sleep(0)
+            
+            # Check for cancellation before saving
+            if cancellation_check and cancellation_check():
+                logger.info(f"Indexing cancelled before saving for chat {chat_id}")
+                return {"message": "Indexing cancelled"}
             
             # Save index and document store using run_in_executor - WAIT for completion
             await run_in_executor(
@@ -412,6 +445,11 @@ class DocumentRAG:
             try:
                 if await aiofiles.ospath.exists(lock_file):
                     await aiofiles.os.remove(lock_file)
+                    # Log cleanup for debugging
+                    if cancellation_check and cancellation_check():
+                        logger.info(f"Cleaned up indexing lock file after cancellation for chat {chat_id}")
+                    else:
+                        logger.debug(f"Cleaned up indexing lock file after completion for chat {chat_id}")
             except Exception as e:
                 logger.error(f"Error removing lock file: {e}")
             

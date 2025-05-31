@@ -278,15 +278,12 @@ async def perform_indexing_with_progress(doc_rag: 'DocumentRAG', chat_id: str):
         start_message = "###PROC_INFO: Indexing uploaded documents...###"
         yield f"data: {start_message}\n\n"
         
-        # Check for cancellation before starting indexing
-        if should_cancel_query(chat_id):
-            logger.info(f"Indexing cancelled before start for chat {chat_id}")
-            end_message = "###PROC_INFO:###"
-            yield f"data: {end_message}\n\n"
-            return
+        # Create cancellation check callback
+        def cancellation_check():
+            return should_cancel_query(chat_id)
         
-        # Perform actual indexing
-        result = await doc_rag.index_documents(chat_id)
+        # Perform actual indexing with cancellation check
+        result = await doc_rag.index_documents(chat_id, cancellation_check=cancellation_check)
         
         logger.info(f"Indexing completed for chat {chat_id}: {result}")
         
@@ -299,21 +296,6 @@ async def perform_indexing_with_progress(doc_rag: 'DocumentRAG', chat_id: str):
         # Send error completion message - raw SSE format without [DONE]
         error_message = "###PROC_INFO:###"
         yield f"data: {error_message}\n\n"
-    finally:
-        # Clean up indexing lock if query was cancelled or failed
-        try:
-            rag_folder = doc_rag._get_rag_storage_folder(str(chat_id))
-            lock_file = os.path.join(rag_folder, "indexing.lock")
-            
-            if os.path.exists(lock_file) and should_cancel_query(chat_id):
-                try:
-                    os.remove(lock_file)
-                    logger.info(f"Cleaned up indexing lock file after cancellation for chat {chat_id}")
-                except Exception as lock_cleanup_error:
-                    logger.error(f"Error cleaning up indexing lock after cancellation for chat {chat_id}: {lock_cleanup_error}")
-        except Exception as cleanup_error:
-            # Don't log this as error since it's best effort cleanup
-            pass
 
 # Endpoint to stop an active query
 @app.post("/stop_query/{chat_id}")
@@ -351,22 +333,6 @@ async def stop_query(
                     active_queries[chat_id_str]["task"].cancel()
                 except Exception as e:
                     logger.error(f"Error cancelling task: {e}")
-            
-            # Clean up any indexing lock files when stopping a query
-            try:
-                doc_rag = get_document_rag(chat_id_str)
-                rag_folder = doc_rag._get_rag_storage_folder(chat_id_str)
-                lock_file = os.path.join(rag_folder, "indexing.lock")
-                
-                if os.path.exists(lock_file):
-                    try:
-                        os.remove(lock_file)
-                        logger.info(f"Cleaned up indexing lock file for chat {chat_id} during stop_query")
-                    except Exception as lock_cleanup_error:
-                        logger.error(f"Error cleaning up indexing lock during stop_query for chat {chat_id}: {lock_cleanup_error}")
-            except Exception as cleanup_error:
-                # Don't log this as error since it's best effort cleanup
-                pass
             
             return {"message": "Query stop signal sent successfully"}
         else:
@@ -844,22 +810,6 @@ async def query_chat(
                 unregister_active_query(chat_id)
             except Exception as unreg_error:
                 logger.error(f"Error unregistering query for chat {chat_id}: {unreg_error}")
-            
-            # Clean up any indexing lock files if the query was cancelled
-            try:
-                doc_rag = get_document_rag(str(chat_id))
-                rag_folder = doc_rag._get_rag_storage_folder(str(chat_id))
-                lock_file = os.path.join(rag_folder, "indexing.lock")
-                
-                if os.path.exists(lock_file):
-                    try:
-                        os.remove(lock_file)
-                        logger.info(f"Cleaned up indexing lock file for chat {chat_id}")
-                    except Exception as lock_cleanup_error:
-                        logger.error(f"Error cleaning up indexing lock for chat {chat_id}: {lock_cleanup_error}")
-            except Exception as cleanup_error:
-                # Don't log this as error since it's best effort cleanup
-                pass
     
     return StreamingResponse(
         stream_response(), 
