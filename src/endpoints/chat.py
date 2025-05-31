@@ -113,30 +113,62 @@ async def get_chat_data(
     Returns:
         Dict containing chat information, messages, document files, and code files
     """
+    import time
+    import logging
+    
+    logger = logging.getLogger("chat_data")
+    start_time = time.time()
+    logger.info(f"Starting chat_data request for chat {chat_id}")
+    
     try:
-        async with SessionLocal() as db:
-            # Check chat ownership
-            user = await get_current_user(request, db)
-            result = await db.execute(
-                select(Chat).filter(Chat.id == chat_id, Chat.user_id == user.id)
-            )
-            chat = result.scalars().first()
+        # Add timeout for database operations
+        timeout_duration = 30  # 30 seconds timeout
         
-            if not chat:
-                raise HTTPException(status_code=404, detail="Chat not found or access denied")
+        async def db_operations():
+            logger.info(f"Creating database session for chat {chat_id}")
+            async with SessionLocal() as db:
+                logger.info(f"Database session created, checking chat ownership for chat {chat_id}")
+                
+                # Check chat ownership
+                user = await get_current_user(request, db)
+                logger.info(f"User {user.id} authenticated, querying chat {chat_id}")
+                
+                result = await db.execute(
+                    select(Chat).filter(Chat.id == chat_id, Chat.user_id == user.id)
+                )
+                chat = result.scalars().first()
+                logger.info(f"Chat ownership query completed for chat {chat_id}")
+            
+                if not chat:
+                    raise HTTPException(status_code=404, detail="Chat not found or access denied")
+            
+                logger.info(f"Querying messages for chat {chat_id}")
+                # Query all messages for this chat ordered by timestamp
+                result = await db.execute(
+                    select(Message).filter(Message.chat_id == chat_id).order_by(Message.timestamp)
+                )
+                messages = result.scalars().all()
+                logger.info(f"Found {len(messages)} messages for chat {chat_id}")
+            
+                logger.info(f"Querying files for chat {chat_id}")
+                # Query all files for this chat
+                result = await db.execute(
+                    select(File).filter(File.chat_id == chat_id)
+                )
+                files = result.scalars().all()
+                logger.info(f"Found {len(files)} files for chat {chat_id}")
+                
+                return chat, messages, files
         
-            # Query all messages for this chat ordered by timestamp
-            result = await db.execute(
-                select(Message).filter(Message.chat_id == chat_id).order_by(Message.timestamp)
-            )
-            messages = result.scalars().all()
+        # Use asyncio.wait_for to add timeout
+        try:
+            chat, messages, files = await asyncio.wait_for(db_operations(), timeout=timeout_duration)
+            logger.info(f"Database operations completed for chat {chat_id} in {time.time() - start_time:.2f}s")
+        except asyncio.TimeoutError:
+            logger.error(f"Database operations timed out after {timeout_duration}s for chat {chat_id}")
+            raise HTTPException(status_code=504, detail=f"Request timed out after {timeout_duration} seconds")
         
-            # Query all files for this chat
-            result = await db.execute(
-                select(File).filter(File.chat_id == chat_id)
-            )
-            files = result.scalars().all()
-        
+        logger.info(f"Processing file separation for chat {chat_id}")
         # Separate files by type
         doc_files = [file for file in files if file.file_type == "doc"]
         code_files = [file for file in files if file.file_type == "code"]
@@ -148,7 +180,8 @@ async def get_chat_data(
                 pass
             return context
         
-        return {
+        logger.info(f"Formatting response for chat {chat_id}")
+        response = {
             "chat_id": chat_id,
             "chat_name": chat.chat_name,
             "messages": [
@@ -181,8 +214,19 @@ async def get_chat_data(
             "doc_count": len(doc_files),
             "code_count": len(code_files)
         }
+        
+        total_time = time.time() - start_time
+        logger.info(f"Chat_data request completed for chat {chat_id} in {total_time:.2f}s")
+        return response
+        
+    except HTTPException:
+        # Re-raise HTTP exceptions
+        total_time = time.time() - start_time
+        logger.error(f"HTTP exception in chat_data for chat {chat_id} after {total_time:.2f}s")
+        raise
     except Exception as e:
-        print(f"Error retrieving chat data: {e}")
+        total_time = time.time() - start_time
+        logger.error(f"Error retrieving chat data for chat {chat_id} after {total_time:.2f}s: {e}")
         raise HTTPException(
             status_code=500,
             detail=f"Database error while fetching chat data: {str(e)}"
