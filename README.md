@@ -13,6 +13,8 @@ A sophisticated chat system with advanced code analysis, document retrieval, and
 - **Streaming Responses**: Real-time response streaming with SSE
 - **Multi-deployment Support**: Multiple AI model deployments
 
+> **Deployment & Docker instructions are located in the [deployment/](deployment/) directory.**
+
 ## Configuration
 
 The server requires a `.env` file in the root directory with the following variables:
